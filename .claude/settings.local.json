@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test *)",
+      "Bash(cargo check *)",
+      "Bash(cargo doc *)",
+      "Bash(grep -r \"fn generate\\\\|pub fn gen\" /mnt/depo/alterchat-main/target/doc/ml_kem/kem/ 2>/dev/null | head -10; grep -r \"generate\" ~/.cargo/registry/src/*/ml-kem-0.3.*/src/kem.rs 2>/dev/null | head -20)",
+      "Read(//home/honor/.cargo/registry/src/**)",
+      "Bash(gh auth *)",
+      "Bash(git --version)",
+      "Bash(sudo pacman -S --noconfirm github-cli)",
+      "Bash(sudo pacman -Sy)",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}

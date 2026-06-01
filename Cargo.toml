@@ -1,0 +1,6 @@
+[workspace]
+members = ["alterchat-bootstrap",
+    "alterchat-core",
+    "alterchat-ui/src-tauri",
+]
+resolver = "2"

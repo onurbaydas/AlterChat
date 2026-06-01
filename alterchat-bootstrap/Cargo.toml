@@ -1,0 +1,8 @@
+[package]
+name = "alterchat-bootstrap"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libp2p = { version = "0.56.0", features = ["tcp", "noise", "yamux", "kad", "tokio", "macros", "ed25519", "identify"] }
+tokio = { version = "1.52.3", features = ["full"] }

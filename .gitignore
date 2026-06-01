@@ -1,0 +1,12 @@
+/target/
+/alterchat-ui/src-tauri/target/
+/alterchat-ui/node_modules/
+/alterchat-ui/dist/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+keypair_*.bin
+*.log
+export_*.json
+.env
