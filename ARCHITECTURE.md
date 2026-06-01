@@ -56,9 +56,9 @@ AlterChat-main/
 flowchart LR
     User["User"] --> UI["React UI"]
     UI -->|invoke| Cmd["Tauri commands"]
-    Cmd -->|mpsc AppCommand| Loop["Tauri async event loop"]
-    Loop --> DB["SQLite profile\nSQLCipher key pragma"]
-    Loop --> Swarm["libp2p Swarm"]
+    Cmd -->|mpsc AppCommand| AppLoop["Tauri async event loop"]
+    AppLoop --> DB["SQLite profile\nSQLCipher key pragma"]
+    AppLoop --> Swarm["libp2p Swarm"]
     Swarm --> DHT["Kademlia DHT"]
     Swarm --> MDNS["mDNS"]
     Swarm --> Gossip["Gossipsub"]
@@ -369,18 +369,18 @@ multiaddrs through reviewed community documentation.
 sequenceDiagram
     participant UI as React UI
     participant Tauri as Tauri command
-    participant Loop as App loop
+    participant App as App loop
     participant DB as SQLCipher SQLite
     participant Net as libp2p swarm
 
     UI->>Tauri: login_profile(password, amnesic)
     Tauri->>Tauri: SHA-256 password path prefix
-    Tauri->>Loop: AppCommand::StartSession
-    Loop->>DB: init_db(path, key)
-    Loop->>Loop: load/generate encrypted keypair
-    Loop->>Loop: load/generate offline X25519 secret
-    Loop->>Net: create swarm and listen
-    Loop-->>UI: peer id
+    Tauri->>App: AppCommand::StartSession
+    App->>DB: init_db(path, key)
+    App->>App: load/generate encrypted keypair
+    App->>App: load/generate offline X25519 secret
+    App->>Net: create swarm and listen
+    App-->>UI: peer id
 ```
 
 ### Room Message
@@ -388,18 +388,18 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant UI
-    participant Loop
+    participant App as App loop
     participant Room as CRDT Room
     participant DB
     participant Gossip as Gossipsub
 
-    UI->>Loop: SendMessage
-    Loop->>Loop: check room permission and rate limit
-    Loop->>Room: add_message
-    Room-->>Loop: CRDT bytes
-    Loop->>DB: save room and search index
-    Loop->>Gossip: publish CRDT bytes
-    Loop-->>UI: new-message event
+    UI->>App: SendMessage
+    App->>App: check room permission and rate limit
+    App->>Room: add_message
+    Room-->>App: CRDT bytes
+    App->>DB: save room and search index
+    App->>Gossip: publish CRDT bytes
+    App-->>UI: new-message event
 ```
 
 ### Direct Message
@@ -407,17 +407,17 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant UI
-    participant Loop
+    participant App as App loop
     participant DB
     participant RR as request-response
     participant Peer
 
-    UI->>Loop: SendPrivateMessage
-    Loop->>DB: load peer settings and friend public key
-    Loop->>Loop: encrypt with ratchet path
-    Loop->>RR: send P2pRequest
+    UI->>App: SendPrivateMessage
+    App->>DB: load peer settings and friend public key
+    App->>App: encrypt with ratchet path
+    App->>RR: send P2pRequest
     RR->>Peer: encrypted payload
-    Loop->>DB: save outgoing message
+    App->>DB: save outgoing message
 ```
 
 ## Implementation Status Matrix
