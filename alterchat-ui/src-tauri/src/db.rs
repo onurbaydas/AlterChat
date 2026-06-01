@@ -1,5 +1,262 @@
 use rusqlite::{params, Connection, Result};
 
+const CURRENT_DB_VERSION: u32 = 2;
+
+pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+    match version {
+        0 => {
+            // Fresh database: apply all V1 migrations inside a single transaction.
+            conn.execute_batch("
+                BEGIN;
+
+                CREATE TABLE IF NOT EXISTS rooms (
+                    channel_name TEXT PRIMARY KEY,
+                    automerge_blob BLOB
+                );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+                );
+
+                CREATE TABLE IF NOT EXISTS friends (
+                    peer_id TEXT PRIMARY KEY,
+                    nickname TEXT,
+                    offline_pubkey TEXT,
+                    trust_level INTEGER NOT NULL DEFAULT 0,
+                    blocked BOOLEAN NOT NULL DEFAULT 0,
+                    muted BOOLEAN NOT NULL DEFAULT 0,
+                    notes TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS private_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    peer_id TEXT NOT NULL,
+                    sender_is_me BOOLEAN NOT NULL,
+                    text TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    ttl INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS saved_groups (
+                    channel_name TEXT PRIMARY KEY,
+                    password TEXT,
+                    default_ttl INTEGER,
+                    persistence_enabled BOOLEAN NOT NULL DEFAULT 1,
+                    invite_only BOOLEAN NOT NULL DEFAULT 0,
+                    notifications_enabled BOOLEAN NOT NULL DEFAULT 1,
+                    retention_days INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS peer_settings (
+                    peer_id TEXT PRIMARY KEY,
+                    trust_level INTEGER NOT NULL DEFAULT 0,
+                    blocked BOOLEAN NOT NULL DEFAULT 0,
+                    muted BOOLEAN NOT NULL DEFAULT 0,
+                    rate_limit_per_minute INTEGER NOT NULL DEFAULT 30,
+                    proof_of_work_required BOOLEAN NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS room_settings (
+                    channel_name TEXT PRIMARY KEY,
+                    default_ttl INTEGER,
+                    retention_days INTEGER,
+                    persistence_enabled BOOLEAN NOT NULL DEFAULT 1,
+                    invite_only BOOLEAN NOT NULL DEFAULT 0,
+                    notifications_enabled BOOLEAN NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS ratchet_states (
+                    peer_id TEXT PRIMARY KEY,
+                    state_blob BLOB NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS storage_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    storage_node_enabled BOOLEAN NOT NULL DEFAULT 0,
+                    quota_mb INTEGER NOT NULL DEFAULT 512,
+                    retention_days INTEGER NOT NULL DEFAULT 7
+                );
+
+                CREATE TABLE IF NOT EXISTS room_invites (
+                    invite_id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL,
+                    token_json TEXT NOT NULL,
+                    revoked BOOLEAN NOT NULL DEFAULT 0,
+                    uses INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS room_roles (
+                    room_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    role_json TEXT NOT NULL,
+                    PRIMARY KEY(room_id, role_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS permission_grants (
+                    room_id TEXT NOT NULL,
+                    subject_peer_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    grant_json TEXT NOT NULL,
+                    PRIMARY KEY(room_id, subject_peer_id, role_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS trust_edges (
+                    from_peer_id TEXT NOT NULL,
+                    to_peer_id TEXT NOT NULL,
+                    edge_json TEXT NOT NULL,
+                    PRIMARY KEY(from_peer_id, to_peer_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS peer_capabilities (
+                    peer_id TEXT PRIMARY KEY,
+                    storage_node BOOLEAN NOT NULL DEFAULT 0,
+                    relay_node BOOLEAN NOT NULL DEFAULT 0,
+                    dht_server BOOLEAN NOT NULL DEFAULT 0,
+                    media_relay BOOLEAN NOT NULL DEFAULT 0,
+                    capacity_score INTEGER NOT NULL DEFAULT 0,
+                    protocol_versions_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS file_manifests (
+                    content_hash TEXT PRIMARY KEY,
+                    manifest_json TEXT NOT NULL,
+                    stored_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS stored_chunks (
+                    chunk_hash TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    expires_at INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS plugin_registry (
+                    plugin_id TEXT PRIMARY KEY,
+                    manifest_json TEXT NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT 0,
+                    granted_capabilities_json TEXT NOT NULL DEFAULT '[]'
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS message_search
+                    USING fts5(scope, peer_id, room_id, sender, text, timestamp UNINDEXED);
+
+                CREATE TABLE IF NOT EXISTS known_peers (
+                    peer_id  TEXT NOT NULL,
+                    multiaddr TEXT NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (peer_id, multiaddr)
+                );
+
+                CREATE TABLE IF NOT EXISTS prekey_bundles (
+                    peer_id TEXT PRIMARY KEY,
+                    bundle_json TEXT NOT NULL,
+                    fetched_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS revoked_invites (
+                    invite_id TEXT PRIMARY KEY,
+                    revoked_at INTEGER NOT NULL,
+                    revoked_by TEXT NOT NULL
+                );
+
+                INSERT OR IGNORE INTO storage_settings (id) VALUES (1);
+
+                PRAGMA user_version = 1;
+
+                COMMIT;
+            ")?;
+            // Fall through to apply subsequent migrations.
+            migrate_v1_to_v2(conn)?;
+        }
+        1 => {
+            // Database is at V1 — apply V2 migration.
+            migrate_v1_to_v2(conn)?;
+        }
+        v if v == CURRENT_DB_VERSION => {
+            // Already up to date — nothing to do.
+        }
+        v => {
+            return Err(rusqlite::Error::UserFunctionError(
+                format!(
+                    "Database version {} is newer than the supported version {}. \
+                     Please upgrade the application.",
+                    v, CURRENT_DB_VERSION
+                )
+                .into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Applies the V1 → V2 schema migration.
+///
+/// V2 adds `used_opk_ids` for one-time prekey (OPK) consumption tracking so
+/// that replay attacks can be detected and rejected.
+fn migrate_v1_to_v2(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("
+        BEGIN;
+
+        CREATE TABLE IF NOT EXISTS used_opk_ids (
+            opk_id  TEXT PRIMARY KEY,
+            peer_id TEXT NOT NULL,
+            used_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+        );
+
+        PRAGMA user_version = 2;
+
+        COMMIT;
+    ")?;
+    Ok(())
+}
+
+// ─── OPK consumption tracking ─────────────────────────────────────────────────
+
+/// Records that `opk_id` has been consumed in a handshake initiated by
+/// `peer_id`.
+///
+/// Returns `Err` if the OPK was already recorded (replay attack detected).
+/// The error message is `"OPK replay detected: <opk_id>"`.
+pub fn mark_opk_used(conn: &Connection, opk_id: &str, peer_id: &str) -> Result<()> {
+    let rows_changed = conn.execute(
+        "INSERT OR IGNORE INTO used_opk_ids (opk_id, peer_id, used_at)
+         VALUES (?1, ?2, ?3)",
+        params![opk_id, peer_id, now_ms()],
+    )?;
+    if rows_changed == 0 {
+        return Err(rusqlite::Error::UserFunctionError(
+            format!("OPK replay detected: {}", opk_id).into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Returns `true` if `opk_id` has already been consumed (and therefore must
+/// not be accepted again).
+pub fn is_opk_used(conn: &Connection, opk_id: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM used_opk_ids WHERE opk_id = ?1",
+        params![opk_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 pub fn init_db(db_path: &str, db_key: &str) -> Result<Connection> {
     let conn = if db_path == ":memory:" {
         Connection::open_in_memory()?
@@ -11,253 +268,8 @@ pub fn init_db(db_path: &str, db_key: &str) -> Result<Connection> {
         conn.pragma_update(None, "key", &db_key)?;
     }
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS rooms (
-            channel_name TEXT PRIMARY KEY,
-            automerge_blob BLOB
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS friends (
-            peer_id TEXT PRIMARY KEY,
-            nickname TEXT,
-            offline_pubkey TEXT,
-            trust_level INTEGER NOT NULL DEFAULT 0,
-            blocked BOOLEAN NOT NULL DEFAULT 0,
-            muted BOOLEAN NOT NULL DEFAULT 0,
-            notes TEXT
-        )",
-        [],
-    )?;
-    let _ = conn.execute(
-        "ALTER TABLE friends ADD COLUMN trust_level INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE friends ADD COLUMN blocked BOOLEAN NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE friends ADD COLUMN muted BOOLEAN NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute("ALTER TABLE friends ADD COLUMN notes TEXT", []);
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS private_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            peer_id TEXT NOT NULL,
-            sender_is_me BOOLEAN NOT NULL,
-            text TEXT NOT NULL,
-            timestamp INTEGER NOT NULL,
-            ttl INTEGER
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS saved_groups (
-            channel_name TEXT PRIMARY KEY,
-            password TEXT,
-            default_ttl INTEGER,
-            persistence_enabled BOOLEAN NOT NULL DEFAULT 1,
-            invite_only BOOLEAN NOT NULL DEFAULT 0,
-            notifications_enabled BOOLEAN NOT NULL DEFAULT 1,
-            retention_days INTEGER
-        )",
-        [],
-    )?;
-    let _ = conn.execute(
-        "ALTER TABLE saved_groups ADD COLUMN default_ttl INTEGER",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE saved_groups ADD COLUMN persistence_enabled BOOLEAN NOT NULL DEFAULT 1",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE saved_groups ADD COLUMN invite_only BOOLEAN NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE saved_groups ADD COLUMN notifications_enabled BOOLEAN NOT NULL DEFAULT 1",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE saved_groups ADD COLUMN retention_days INTEGER",
-        [],
-    );
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS peer_settings (
-            peer_id TEXT PRIMARY KEY,
-            trust_level INTEGER NOT NULL DEFAULT 0,
-            blocked BOOLEAN NOT NULL DEFAULT 0,
-            muted BOOLEAN NOT NULL DEFAULT 0,
-            rate_limit_per_minute INTEGER NOT NULL DEFAULT 30,
-            proof_of_work_required BOOLEAN NOT NULL DEFAULT 0
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS room_settings (
-            channel_name TEXT PRIMARY KEY,
-            default_ttl INTEGER,
-            retention_days INTEGER,
-            persistence_enabled BOOLEAN NOT NULL DEFAULT 1,
-            invite_only BOOLEAN NOT NULL DEFAULT 0,
-            notifications_enabled BOOLEAN NOT NULL DEFAULT 1
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS ratchet_states (
-            peer_id TEXT PRIMARY KEY,
-            state_blob BLOB NOT NULL,
-            updated_at INTEGER NOT NULL
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS storage_settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            storage_node_enabled BOOLEAN NOT NULL DEFAULT 0,
-            quota_mb INTEGER NOT NULL DEFAULT 512,
-            retention_days INTEGER NOT NULL DEFAULT 7
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS room_invites (
-            invite_id TEXT PRIMARY KEY,
-            room_id TEXT NOT NULL,
-            token_json TEXT NOT NULL,
-            revoked BOOLEAN NOT NULL DEFAULT 0,
-            uses INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS room_roles (
-            room_id TEXT NOT NULL,
-            role_id TEXT NOT NULL,
-            role_json TEXT NOT NULL,
-            PRIMARY KEY(room_id, role_id)
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS permission_grants (
-            room_id TEXT NOT NULL,
-            subject_peer_id TEXT NOT NULL,
-            role_id TEXT NOT NULL,
-            grant_json TEXT NOT NULL,
-            PRIMARY KEY(room_id, subject_peer_id, role_id)
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS trust_edges (
-            from_peer_id TEXT NOT NULL,
-            to_peer_id TEXT NOT NULL,
-            edge_json TEXT NOT NULL,
-            PRIMARY KEY(from_peer_id, to_peer_id)
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS peer_capabilities (
-            peer_id TEXT PRIMARY KEY,
-            storage_node BOOLEAN NOT NULL DEFAULT 0,
-            relay_node BOOLEAN NOT NULL DEFAULT 0,
-            dht_server BOOLEAN NOT NULL DEFAULT 0,
-            media_relay BOOLEAN NOT NULL DEFAULT 0,
-            capacity_score INTEGER NOT NULL DEFAULT 0,
-            protocol_versions_json TEXT NOT NULL DEFAULT '[]',
-            updated_at INTEGER NOT NULL
-        )",
-        [],
-    )?;
-    let _ = conn.execute(
-        "ALTER TABLE peer_capabilities ADD COLUMN protocol_versions_json TEXT NOT NULL DEFAULT '[]'",
-        [],
-    );
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS file_manifests (
-            content_hash TEXT PRIMARY KEY,
-            manifest_json TEXT NOT NULL,
-            stored_at INTEGER NOT NULL
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS stored_chunks (
-            chunk_hash TEXT PRIMARY KEY,
-            content_hash TEXT NOT NULL,
-            chunk_index INTEGER NOT NULL,
-            path TEXT NOT NULL,
-            size INTEGER NOT NULL,
-            expires_at INTEGER
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS plugin_registry (
-            plugin_id TEXT PRIMARY KEY,
-            manifest_json TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT 0,
-            granted_capabilities_json TEXT NOT NULL DEFAULT '[]'
-        )",
-        [],
-    )?;
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS message_search
-         USING fts5(scope, peer_id, room_id, sender, text, timestamp UNINDEXED)",
-        [],
-    )?;
-    conn.execute("INSERT OR IGNORE INTO storage_settings (id) VALUES (1)", [])?;
-    // PeerStore: oturumlararası keşfedilen peer adresleri (zero-config bootstrap)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS known_peers (
-            peer_id  TEXT NOT NULL,
-            multiaddr TEXT NOT NULL,
-            last_seen INTEGER NOT NULL,
-            PRIMARY KEY (peer_id, multiaddr)
-        )",
-        [],
-    )?;
-    // DHT PreKeyBundle önbelleği (X3DH)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS prekey_bundles (
-            peer_id TEXT PRIMARY KEY,
-            bundle_json TEXT NOT NULL,
-            fetched_at INTEGER NOT NULL
-        )",
-        [],
-    )?;
-    // Revokasyon listesi (dağıtık iptaller)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS revoked_invites (
-            invite_id TEXT PRIMARY KEY,
-            revoked_at INTEGER NOT NULL,
-            revoked_by TEXT NOT NULL
-        )",
-        [],
-    )?;
+    run_migrations(&conn)?;
+
     Ok(conn)
 }
 
@@ -1110,7 +1122,7 @@ pub fn cleanup_old_peers(conn: &Connection, max_age_ms: i64) -> Result<()> {
     Ok(())
 }
 
-// ─── PreKeyBundle önbellek ───────────────────────────────────────────────────
+// ─── PreKeyBundle cache ───────────────────────────────────────────────────────
 
 pub fn save_prekey_bundle(conn: &Connection, peer_id: &str, bundle_json: &str) -> Result<()> {
     conn.execute(
@@ -1133,7 +1145,7 @@ pub fn load_prekey_bundle(conn: &Connection, peer_id: &str) -> Result<Option<Str
     }
 }
 
-// ─── Revokasyon listesi ──────────────────────────────────────────────────────
+// ─── Revocation list ──────────────────────────────────────────────────────────
 
 pub fn mark_invite_revoked(conn: &Connection, invite_id: &str, revoked_by: &str) -> Result<()> {
     conn.execute(
@@ -1161,4 +1173,123 @@ pub fn list_revoked_invite_ids(conn: &Connection) -> Result<Vec<String>> {
         ids.push(row?);
     }
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fresh_migration() {
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+        run_migrations(&conn).expect("migrations should succeed on a fresh DB");
+
+        // user_version should be 2 (CURRENT_DB_VERSION)
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("pragma query");
+        assert_eq!(version, 2, "user_version must be 2 after migration");
+
+        // Key tables must exist — querying them is sufficient proof
+        conn.execute_batch("SELECT 1 FROM rooms LIMIT 1").expect("rooms table missing");
+        conn.execute_batch("SELECT 1 FROM friends LIMIT 1").expect("friends table missing");
+        conn.execute_batch("SELECT 1 FROM private_messages LIMIT 1")
+            .expect("private_messages table missing");
+        conn.execute_batch("SELECT 1 FROM used_opk_ids LIMIT 1")
+            .expect("used_opk_ids table missing");
+    }
+
+    #[test]
+    fn test_migration_idempotent() {
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+
+        // First run
+        run_migrations(&conn).expect("first migration run should succeed");
+
+        // Second run — version is now 2 == CURRENT_DB_VERSION, must be a no-op
+        run_migrations(&conn).expect("second migration run should succeed without error");
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("pragma query");
+        assert_eq!(version, 2, "user_version must still be 2 after second run");
+    }
+
+    #[test]
+    fn test_migration_v1_to_v2() {
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+
+        // Simulate a V1 database by running only the V1 batch directly.
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE IF NOT EXISTS rooms (channel_name TEXT PRIMARY KEY, automerge_blob BLOB);
+            CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+            );
+            CREATE TABLE IF NOT EXISTS storage_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                storage_node_enabled BOOLEAN NOT NULL DEFAULT 0,
+                quota_mb INTEGER NOT NULL DEFAULT 512,
+                retention_days INTEGER NOT NULL DEFAULT 7
+            );
+            INSERT OR IGNORE INTO storage_settings (id) VALUES (1);
+            PRAGMA user_version = 1;
+            COMMIT;
+        ").expect("manual V1 setup");
+
+        // run_migrations must detect version 1 and upgrade to 2.
+        run_migrations(&conn).expect("V1 -> V2 migration should succeed");
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("pragma query");
+        assert_eq!(version, 2, "user_version must be 2 after V1->V2 upgrade");
+
+        conn.execute_batch("SELECT 1 FROM used_opk_ids LIMIT 1")
+            .expect("used_opk_ids table must exist after V2 migration");
+    }
+
+    #[test]
+    fn test_opk_replay_detection() {
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+        run_migrations(&conn).expect("migrations");
+
+        let opk_id = "opk-test-abc123";
+        let peer_id = "peer-test-xyz";
+
+        // First use: must succeed.
+        mark_opk_used(&conn, opk_id, peer_id)
+            .expect("first mark_opk_used should succeed");
+
+        // is_opk_used must now return true.
+        assert!(
+            is_opk_used(&conn, opk_id).expect("is_opk_used query"),
+            "OPK should be reported as used after mark_opk_used"
+        );
+
+        // Second use with the same opk_id: must return Err (replay detected).
+        let replay_result = mark_opk_used(&conn, opk_id, peer_id);
+        assert!(
+            replay_result.is_err(),
+            "mark_opk_used must return Err on a replayed OPK"
+        );
+
+        // A fresh OPK ID must still be accepted.
+        mark_opk_used(&conn, "opk-fresh-999", peer_id)
+            .expect("a different OPK ID must be accepted");
+    }
+
+    #[test]
+    fn test_is_opk_used_on_fresh_id() {
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+        run_migrations(&conn).expect("migrations");
+
+        // An OPK that has never been marked must not appear as used.
+        let used = is_opk_used(&conn, "opk-never-seen")
+            .expect("is_opk_used query");
+        assert!(!used, "an unseen OPK must not be reported as used");
+    }
 }

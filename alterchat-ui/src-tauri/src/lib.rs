@@ -786,6 +786,8 @@ pub fn run() {
     let (tx, mut rx) = mpsc::channel(100);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState {
             tx,
             db_path: tokio::sync::Mutex::new(None),
@@ -1586,6 +1588,7 @@ pub fn run() {
                                                     );
                                                 }
                                                 alterchat_core::file_transfer::P2pRequest::PrivateMessage { text, sender_nick, timestamp, ttl, pow_token } => {
+                                                    tracing::warn!("Received legacy ratchet DM from peer {}. Legacy path deprecated since 0.2.0.", peer_id);
                                                     if let Some(conn) = &conn_opt {
                                                         let friends = db::get_friends(conn).unwrap_or_default();
                                                         let is_friend = friends.iter().any(|f| f.peer_id == peer.to_string());
@@ -1643,6 +1646,7 @@ pub fn run() {
                                                     );
                                                 }
                                                 alterchat_core::file_transfer::P2pRequest::RatchetPrivateMessage { envelope, sender_nick, timestamp, ttl } => {
+                                                    tracing::warn!("Received legacy ratchet DM from peer {}. Legacy path deprecated since 0.2.0.", peer_id);
                                                     let mut success = false;
                                                     if let Some(conn) = &conn_opt {
                                                         let peer_id = peer.to_string();

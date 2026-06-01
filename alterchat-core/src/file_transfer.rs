@@ -16,6 +16,7 @@ pub enum P2pRequest {
     WebRtcSignal {
         signal: String,
     },
+    #[deprecated(since = "0.2.0", note = "Use X3dhDm instead")]
     PrivateMessage {
         text: String,
         sender_nick: String,
@@ -23,6 +24,7 @@ pub enum P2pRequest {
         ttl: Option<i64>,
         pow_token: Option<crate::pow::PoWToken>,
     },
+    #[deprecated(since = "0.2.0", note = "Use X3dhDm instead")]
     RatchetPrivateMessage {
         envelope: Vec<u8>,
         sender_nick: String,

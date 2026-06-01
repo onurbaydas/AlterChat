@@ -18,7 +18,17 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/alterchat/alterchat/releases/latest/download/latest.json"
+      ]
+    },
+    "process": {
+      "all": true
     }
   },
   "bundle": {

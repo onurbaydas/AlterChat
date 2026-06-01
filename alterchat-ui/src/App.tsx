@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { LoginScreen } from "./components/LoginScreen";
+import { OnboardingWizard } from "./components/OnboardingWizard";
 import { PanicModal } from "./components/PanicModal";
 import { SafetyNumbers } from "./components/SafetyNumbers";
 import { TrustGraph } from "./components/TrustGraph";
 import { VaultExport } from "./components/VaultExport";
+import { NetworkStatusBadge } from "./components/NetworkStatusBadge";
+import type { NetworkStatus } from "./components/NetworkStatusBadge";
 import "./index.css";
 
 import { deriveMediaKey, makeE2EESenderTransform, makeE2EEReceiverTransform } from "./webrtc";
@@ -16,9 +18,6 @@ import type {
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [loginPassword, setLoginPassword] = useState("");
-  const [amnesicMode, setAmnesicMode] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const [myNick, setMyNick] = useState<string>("");
   const [myOfflinePubkey, setMyOfflinePubkey] = useState<string>("");
@@ -86,7 +85,8 @@ function App() {
   const [preferredSfuPeer, setPreferredSfuPeer] = useState("");
   const [acceptRelay, setAcceptRelay] = useState(false);
   const [experimentalMediaE2ee, setExperimentalMediaE2ee] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'identity'|'network'|'privacy'|'rooms'|'storage'|'media'|'advanced'>('identity');
+  const [settingsTab, setSettingsTab] = useState<'identity'|'network'|'privacy'|'rooms'|'storage'|'media'|'advanced'|'about'>('identity');
+  const [appVersion, setAppVersion] = useState<string>("0.1.0");
   const [friendIdInput, setFriendIdInput] = useState("");
   const [friendNickInput, setFriendNickInput] = useState("");
   const [friendPubkeyInput, setFriendPubkeyInput] = useState("");
@@ -122,26 +122,21 @@ function App() {
   // #16 Ağ ban bildirimi
   const [bannedPeers, setBannedPeers] = useState<string[]>([]);
 
+  // Network status indicator
+  const [networkStatus, setNetworkStatus] = useState<NetworkStatus>("connecting");
+
+  useEffect(() => {
+    invoke<string>("plugin:app|version")
+      .then((v: string) => setAppVersion(v))
+      .catch(() => setAppVersion("0.1.0"));
+  }, []);
+
   const handlePanicWipe = async () => {
     setShowPanicModal(true);
   };
 
   const executePanicWipe = async () => {
     await invoke("panic_wipe", { scope: panicScope });
-  };
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!loginPassword.trim()) return;
-    setIsLoggingIn(true);
-    try {
-      const id = await invoke<string>("login_profile", { password: loginPassword, amnesic: amnesicMode });
-      setPeerId(id);
-      setIsAuthenticated(true);
-    } catch (err) {
-      alert("Failed to unlock vault: " + err);
-    }
-    setIsLoggingIn(false);
   };
 
   // --- Initialization & Listeners ---
@@ -265,16 +260,39 @@ function App() {
         if (!prev.includes(event.payload)) return [...prev, event.payload];
         return prev;
       });
+      setNetworkStatus("online");
     });
 
     const unlistenPeerExpired = listen<string>("peer-expired", (event) => {
-      setPeers((prev) => prev.filter(p => p !== event.payload));
+      setPeers((prev: string[]) => {
+        const next = prev.filter((p: string) => p !== event.payload);
+        setNetworkStatus(next.length > 0 ? "online" : "connecting");
+        return next;
+      });
       // Cleanup WebRTC if they left
       if (pcsRef.current.has(event.payload)) {
         pcsRef.current.get(event.payload)?.close();
         pcsRef.current.delete(event.payload);
         setRemoteStreams(prev => prev.filter(s => s.peerId !== event.payload));
       }
+    });
+
+    const unlistenNetworkStatus = listen<string>("network-status", (event: { payload: string }) => {
+      const s = event.payload as NetworkStatus;
+      if (s === "online" || s === "connecting" || s === "offline") {
+        setNetworkStatus(s);
+      }
+    });
+
+    const unlistenPeerConnected = listen<string>("peer-connected", () => {
+      setNetworkStatus("online");
+    });
+
+    const unlistenPeerDisconnected = listen<string>("peer-disconnected", () => {
+      setPeers((prev: string[]) => {
+        setNetworkStatus(prev.length > 0 ? "online" : "connecting");
+        return prev;
+      });
     });
 
     const unlistenSignal = listen<any>("webrtc-signal", async (event) => {
@@ -853,13 +871,8 @@ function App() {
 
   if (!isAuthenticated) {
     return (
-      <LoginScreen 
-        loginPassword={loginPassword}
-        setLoginPassword={setLoginPassword}
-        amnesicMode={amnesicMode}
-        setAmnesicMode={setAmnesicMode}
-        isLoggingIn={isLoggingIn}
-        handleLogin={handleLogin}
+      <OnboardingWizard
+        onComplete={() => setIsAuthenticated(true)}
       />
     );
   }
@@ -903,7 +916,7 @@ function App() {
           <div className="modal-content settings-modal">
             <h3>Settings & Sovereignty</h3>
             <div className="settings-tabs">
-              {(['identity','network','privacy','rooms','storage','media','advanced'] as const).map(tab => (
+              {(['identity','network','privacy','rooms','storage','media','advanced','about'] as const).map(tab => (
                 <button key={tab} className={`settings-tab ${settingsTab === tab ? 'active' : ''}`} onClick={() => setSettingsTab(tab)}>{tab}</button>
               ))}
             </div>
@@ -1013,6 +1026,30 @@ function App() {
                     <option value="all_profiles">All local profiles</option>
                   </select>
                 </>
+              )}
+
+              {settingsTab === 'about' && (
+                <div className="about-pane">
+                  <div className="about-version">AlterChat v{appVersion}</div>
+                  <div className="about-desc">
+                    Local-first, peer-to-peer, zero-trust communication workspace.
+                  </div>
+                  <div>
+                    <a
+                      href="#"
+                      className="about-changelog-link"
+                      onClick={(e: MouseEvent) => {
+                        e.preventDefault();
+                        invoke("plugin:opener|open_url", { url: "https://github.com/onurbaydas/AlterChat/blob/main/CHANGELOG.md" }).catch(console.error);
+                      }}
+                    >
+                      Changelog
+                    </a>
+                  </div>
+                  <div className="settings-note">
+                    License: AGPL-3.0. Alpha-stage research implementation — treat accordingly.
+                  </div>
+                </div>
               )}
             </div>
 

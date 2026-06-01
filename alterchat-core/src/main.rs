@@ -63,9 +63,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                    let mut new_addrs: Vec<String> = Vec::new();
                     for (peer_id, multiaddr) in list {
                         println!("mDNS discovered a new peer: {} at {}", peer_id, multiaddr);
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                        new_addrs.push(multiaddr.to_string());
+                    }
+                    if !new_addrs.is_empty() {
+                        let peers_path = network::default_known_peers_path();
+                        let mut existing = network::load_known_peers(&peers_path);
+                        for addr in new_addrs {
+                            if !existing.contains(&addr) {
+                                existing.push(addr);
+                            }
+                        }
+                        let _ = network::save_known_peers(&existing, &peers_path);
                     }
                 }
                 SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {

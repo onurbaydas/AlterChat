@@ -56,6 +56,24 @@ The maintainers will try to:
 - credit the reporter if desired
 - publish a security note after users have a reasonable update window
 
+## Changelog — Security-Relevant Changes
+
+- **v0.1.1 (DB migration 2):** OPK consumption tracking added. One-time prekeys
+  (OPKs) are now recorded in the `used_opk_ids` table upon first use. Any
+  subsequent X3DH handshake that presents the same OPK ID is rejected as a
+  replay attack. See `db::mark_opk_used` and `db::is_opk_used` for the
+  implementation, and the `// IMPORTANT` comment above `receive_x3dh` in
+  `alterchat-core/src/x3dh.rs` for the required call-site checks.
+
+## DM Protocol Canonical Path (v0.1.0+)
+
+The canonical DM encryption path is **X3DH + ML-KEM-768 + Double Ratchet**
+(variant: `X3dhHybridMessage` or equivalent in `P2pRequest`).
+
+Legacy paths (`RatchetMessage`, `DoubleRatchetMessage`) are deprecated as of
+v0.2.0 and will be removed in v0.3.0. New sessions MUST use the X3DH hybrid
+path.
+
 ## Research Rules
 
 Please do not:

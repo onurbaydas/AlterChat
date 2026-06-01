@@ -8,17 +8,57 @@ use libp2p::{
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Topluluk tarafından işletilen fallback bootstrap node'ları.
-/// Kullanıcı hiçbir şey yapılandırmadan çift tıklayıp ağa girebilir.
-/// Herhangi bir topluluk üyesi `alterchat-bootstrap` binary'sini çalıştırıp
-/// multiaddr'ini bu listeye PR göndererek ekleyebilir.
+// ---------------------------------------------------------------------------
+// Known-peer persistence
+// ---------------------------------------------------------------------------
+
+/// Returns the default path for the known-peers file:
+/// `$HOME/.alterchat/known_peers.json` (falls back to `$USERPROFILE` on Windows).
+pub fn default_known_peers_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".alterchat").join("known_peers.json")
+}
+
+/// Persists a list of multiaddr strings as a JSON array to `path`.
+/// Creates parent directories if they do not exist.
+pub fn save_known_peers(peers: &[String], path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string(peers)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Reads a JSON array of multiaddr strings from `path`.
+/// Returns an empty `Vec` on any error (missing file, parse error, etc.).
+pub fn load_known_peers(path: &Path) -> Vec<String> {
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str::<Vec<String>>(&data).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+
+/// Community bootstrap nodes for peer discovery.
+/// Override with ALTERCHAT_BOOTSTRAP env var (comma-separated multiaddrs).
+/// Format: /ip4/<IP>/tcp/<PORT>/p2p/<PEER_ID>
+///
+/// These entries are used for initial DHT bootstrap; they carry no special
+/// authority (Manifesto I). Any community member can run `alterchat-bootstrap`
+/// and submit a PR to add their multiaddr to this list.
 pub const COMMUNITY_BOOTSTRAP_ADDRS: &[&str] = &[
-    // ── Topluluk bootstrap node'ları ──
-    // Her node'un multiaddr'i: /ip4/<IP>/tcp/<PORT>/p2p/<PEER_ID>
-    // Bu adresler başlangıç DHT keşfi için kullanılır; otorite değildir (Manifesto I).
-    // Not: Aşağıdaki adresler deploy edildikten sonra gerçek değerlerle güncellenmelidir.
+    // Placeholder: replace with real community nodes before public release
+    // "/ip4/bootstrap1.alterchat.example/tcp/4001/p2p/12D3KooW..."
+    //
+    // Candidates waiting for deployment confirmation:
     // "/ip4/95.216.8.12/tcp/4001/p2p/12D3KooWRkGLz4YbVmrsWK75VhydFu5Ncy1XHCkUBqLDinYBYEGR",
     // "/ip4/167.235.132.45/tcp/4001/p2p/12D3KooWQnwEGNqcM2nAcPtRR9rAX8Hrg4k9kJLCHoTR5chJjKD6",
     // "/ip4/49.13.56.189/tcp/4001/p2p/12D3KooWHdiAxVd8uMQR1hGWXccidmfCwLqcMpGwR6QcTP6QRMuD",
@@ -39,8 +79,23 @@ pub fn resolve_dns_seeds() -> Vec<String> {
 }
 
 /// Kullanıcı bootstrap + topluluk bootstrap + DNS seed birleşimi.
+/// ALTERCHAT_BOOTSTRAP env var (comma-separated multiaddrs) also contributes.
 pub fn effective_bootstrap_addrs(user_addrs: &[String]) -> Vec<String> {
     let mut addrs: Vec<String> = user_addrs.to_vec();
+
+    // Env var override: ALTERCHAT_BOOTSTRAP=<multiaddr1>,<multiaddr2>,...
+    let env_bootstrap: Vec<String> = std::env::var("ALTERCHAT_BOOTSTRAP")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .collect();
+    for addr in env_bootstrap {
+        if !addrs.contains(&addr) {
+            addrs.push(addr);
+        }
+    }
+
     for addr in COMMUNITY_BOOTSTRAP_ADDRS {
         let s = addr.to_string();
         if !addrs.contains(&s) {
@@ -273,6 +328,18 @@ pub async fn create_swarm(
                 swarm.dial(addr).ok();
             }
         }
+
+        // Dial previously discovered peers that survived restart.
+        let peers_path = default_known_peers_path();
+        let persisted = load_known_peers(&peers_path);
+        for addr_str in &persisted {
+            if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
+                swarm.dial(addr).ok();
+            }
+        }
+        // Re-save so the file is refreshed / created if it was missing.
+        let _ = save_known_peers(&persisted, &peers_path);
+
         return Ok(swarm);
     } else {
         let _ = &config.proxy_mode; // Socks5 / Direct transport
@@ -300,6 +367,51 @@ pub async fn create_swarm(
                 swarm.dial(addr).ok();
             }
         }
+
+        // Dial previously discovered peers that survived restart.
+        let peers_path = default_known_peers_path();
+        let persisted = load_known_peers(&peers_path);
+        for addr_str in &persisted {
+            if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
+                swarm.dial(addr).ok();
+            }
+        }
+        // Re-save so the file is refreshed / created if it was missing.
+        let _ = save_known_peers(&persisted, &peers_path);
+
         return Ok(swarm);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_save_and_load_known_peers() {
+        let dir = std::env::temp_dir().join("alterchat_test_peers");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("known_peers.json");
+
+        let peers = vec![
+            "/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWFakeAddr1111111111111111111111111111111111111111".to_string(),
+            "/ip4/5.6.7.8/tcp/4001/p2p/12D3KooWFakeAddr2222222222222222222222222222222222222222".to_string(),
+        ];
+
+        save_known_peers(&peers, &path).expect("save should succeed");
+        let loaded = load_known_peers(&path);
+        assert_eq!(loaded.len(), 2, "expected 2 peers, got {}", loaded.len());
+        assert_eq!(loaded[0], peers[0]);
+        assert_eq!(loaded[1], peers[1]);
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_known_peers_missing_file() {
+        let path = std::env::temp_dir().join("alterchat_nonexistent_peers.json");
+        let loaded = load_known_peers(&path);
+        assert!(loaded.is_empty(), "missing file should return empty vec");
     }
 }

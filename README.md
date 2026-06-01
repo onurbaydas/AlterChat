@@ -196,6 +196,25 @@ flowchart TD
 
 The detailed architecture is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Security Status
+
+> **Alpha Software — Not Independently Audited**
+>
+> AlterChat has NOT undergone an independent cryptographic or security audit.
+> The cryptographic primitives (X3DH, ML-KEM-768, Double Ratchet) are implemented
+> from standard specifications but implementation correctness is unverified.
+> Do not use for high-stakes communications until an audit is completed.
+
+Known limitations in v0.1.0:
+
+- Group message rooms (Gossipsub) do not have per-room end-to-end encryption
+  in v0.1.0.
+- DHT queries and peer connections reveal metadata to network observers.
+- Panic wipe uses best-effort file overwrite (SSD wear-leveling may retain
+  data).
+- Pluggable transport obfuscation (obfs4, Snowflake) is not wired to the
+  transport layer.
+
 ## Security Posture
 
 AlterChat is designed with strong security goals, but the repository should not
@@ -303,6 +322,23 @@ Expected output includes a multiaddr similar to:
 Community bootstrap addresses are currently configured as an empty list in
 `alterchat-core/src/network.rs`. Add real community-operated multiaddrs through
 reviewed pull requests, not as a central authority.
+
+### Configuring Bootstrap Nodes via Environment Variable
+
+You can supply additional bootstrap nodes at runtime without modifying source
+code. Set the `ALTERCHAT_BOOTSTRAP` environment variable to a comma-separated
+list of multiaddrs:
+
+```bash
+export ALTERCHAT_BOOTSTRAP="\
+/ip4/1.2.3.4/tcp/4001/p2p/12D3KooW...,\
+/ip4/5.6.7.8/tcp/4001/p2p/12D3KooW..."
+cargo run --package alterchat-bootstrap --release
+```
+
+These addresses are merged with the hardcoded `COMMUNITY_BOOTSTRAP_ADDRS` list
+at startup. User-supplied addresses (via `NetworkPrivacyConfig.bootstrap_addrs`)
+take precedence, followed by env-var entries, then the compiled-in list.
 
 ## Operational Concepts
 

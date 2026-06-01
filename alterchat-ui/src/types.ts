@@ -12,6 +12,7 @@ export interface PrivateMessage {
   text: string;
   timestamp: number;
   ttl?: number | null;
+  status?: 'sending' | 'sent' | 'failed';
 }
 export interface Friend {
   peer_id: string;
