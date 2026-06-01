@@ -1,38 +1,134 @@
 # Contributing to AlterChat
 
-First off, thank you for considering contributing to AlterChat! It's people like you that make this open-source community such a great place to learn, inspire, and create.
+Thank you for helping improve AlterChat. This repository is small enough to move
+quickly, but security-sensitive enough that every change needs clear reasoning.
 
-## 1. Where do I go from here?
+## Ground Rules
 
-If you've noticed a bug or have a feature request, make one! It's generally best if you get confirmation of your bug or approval for your feature request this way before starting to code.
+- Keep AlterChat local-first and peer-to-peer.
+- Do not introduce a required central service.
+- Treat every peer payload as hostile input.
+- Put security enforcement in Rust, not only in the React UI.
+- Update documentation when behavior, commands, storage, or threat assumptions
+  change.
+- Keep pull requests focused and reviewable.
 
-## 2. Fork & create a branch
+## Development Setup
 
-If this is something you think you can fix, then fork AlterChat and create a branch with a descriptive name.
+Requirements:
 
-## 3. Implementation Guidelines
+- Rust 1.95+
+- Node.js 20+
+- npm
+- Tauri v2 platform prerequisites
 
-- **Security First:** This is a secure messaging application. Any code that touches cryptography, networking, or the SQLite database must be heavily reviewed.
-- **No Servers:** Do not introduce any dependency that requires a centralized server.
-- **Rust Standards:** Use `cargo fmt` and `cargo clippy` before submitting. Your PR will fail CI if it doesn't pass these checks.
-- **Tauri/React Standards:** Keep components small, use functional components, and use strict TypeScript typing.
+Install and check:
 
-## 4. Make a Pull Request
-
-At this point, you should switch back to your master branch and make sure it's up to date with AlterChat's master branch:
-
-```sh
-git remote add upstream https://github.com/your-org/alterchat.git
-git checkout master
-git pull upstream master
+```bash
+git clone https://github.com/onurbaydas/AlterChat.git
+cd AlterChat
+rustup update stable
+cargo check --workspace
 ```
 
-Then update your feature branch from your local copy of master, and push it!
+Run the desktop app:
 
-```sh
-git checkout 325-add-new-feature
-git rebase master
-git push --set-upstream origin 325-add-new-feature
+```bash
+cd alterchat-ui
+npm install
+npm run tauri dev
 ```
 
-Finally, go to GitHub and make a Pull Request.
+## Branch Workflow
+
+```bash
+git checkout -b feature/short-description
+```
+
+Before opening a PR:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+```
+
+Frontend:
+
+```bash
+cd alterchat-ui
+npm install
+npm run build
+```
+
+If a check cannot be run, explain why in the PR.
+
+## PR Expectations
+
+Every PR should include:
+
+- what changed
+- why it changed
+- how it was tested
+- risk level
+- screenshots for UI changes
+- migration notes for database or serialized-state changes
+- threat-model notes for crypto, networking, storage, or IPC changes
+
+## Security-Sensitive Areas
+
+Request extra review for changes touching:
+
+- `alterchat-core/src/crypto.rs`
+- `alterchat-core/src/double_ratchet.rs`
+- `alterchat-core/src/x3dh.rs`
+- `alterchat-core/src/secure_storage.rs`
+- `alterchat-core/src/network.rs`
+- `alterchat-core/src/onion.rs`
+- `alterchat-core/src/governance.rs`
+- `alterchat-ui/src-tauri/src/db.rs`
+- `alterchat-ui/src-tauri/src/lib.rs`
+- `alterchat-ui/src-tauri/src/commands/`
+- Tauri config or capabilities
+- GitHub workflows
+
+## Testing Guidance
+
+For narrow changes, unit tests are enough. For shared behavior, add integration
+coverage. For protocol changes, include round-trip tests and failure tests.
+
+Useful test shapes:
+
+- wrong password fails to open encrypted material
+- malformed peer payload is rejected
+- old ratchet state can still be loaded or migrated
+- invite expiry and revocation are enforced
+- room permission checks reject unauthorized actions
+- file chunk tampering is detected
+- UI commands fail cleanly when not logged in
+
+## Documentation Changes
+
+Update Markdown files when:
+
+- a command changes
+- a setting is added or removed
+- a security claim changes
+- a database table or serialized format changes
+- a feature moves from experimental to supported
+- a threat or limitation becomes known
+
+## Commit Style
+
+Use short, direct commit messages:
+
+```text
+docs: clarify x3dh limitations
+core: add ratchet replay test
+ui: expose safety number error state
+```
+
+## Reporting Vulnerabilities
+
+Do not open public issues for exploitable vulnerabilities. Follow
+[SECURITY.md](SECURITY.md).

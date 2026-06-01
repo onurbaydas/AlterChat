@@ -1,25 +1,46 @@
 ---
 name: Bug report
-about: Create a report to help us improve
-title: ''
+about: Report a reproducible problem in AlterChat
+title: "[Bug]: "
 labels: bug
-assignees: ''
-
+assignees: ""
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## Summary
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+<!-- What went wrong? -->
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## Steps to Reproduce
 
-**Environment (please complete the following information):**
- - OS: [e.g. Windows 11, macOS, Linux]
- - Version [e.g. 1.0.0]
+1. 
+2. 
+3. 
+
+## Expected Behavior
+
+<!-- What should have happened? -->
+
+## Actual Behavior
+
+<!-- What happened instead? Include exact error text if possible. -->
+
+## Environment
+
+- OS:
+- Rust version:
+- Node.js version:
+- AlterChat commit or version:
+- Running mode: desktop app / core node / bootstrap node
+
+## Logs or Screenshots
+
+<!-- Remove private keys, peer secrets, database contents, wallet addresses, and personal messages. -->
+
+## Security Check
+
+Could this expose private messages, keys, profile data, or allow remote code
+execution?
+
+- [ ] No
+- [ ] Unsure
+- [ ] Yes, I will report it privately using SECURITY.md instead of this issue

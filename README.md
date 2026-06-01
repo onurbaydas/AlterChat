@@ -1,159 +1,418 @@
 <div align="center">
   <h1>بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ</h1>
   <h2>AlterChat</h2>
-  <p><b>The Sovereign, Decentralized, Zero-Trust Communication Infrastructure</b></p>
-  
-  [![Rust](https://img.shields.io/badge/rust-v1.85.0-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
+  <p><strong>Local-first, peer-to-peer, zero-trust communication workspace</strong></p>
+
+  [![CI](https://github.com/onurbaydas/AlterChat/actions/workflows/ci.yml/badge.svg)](https://github.com/onurbaydas/AlterChat/actions/workflows/ci.yml)
+  [![Rust](https://img.shields.io/badge/Rust-1.95%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
   [![Tauri](https://img.shields.io/badge/Tauri-v2-blue?style=flat-square&logo=tauri)](https://tauri.app/)
-  [![React](https://img.shields.io/badge/React-v18-cyan?style=flat-square&logo=react)](https://reactjs.org/)
-  [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=flat-square)](LICENSE)
+  [![React](https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react)](https://react.dev/)
+  [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square)](LICENSE)
 </div>
 
 ---
 
-## 📖 Comprehensive Overview
+## Overview
 
-AlterChat is not just another messaging application; it is a **sovereign, peer-to-peer communication protocol** engineered from the ground up to eliminate central points of failure, metadata harvesting, and cryptographic obsolescence. Built with a monolithic yet highly concurrent Rust backend and a lightweight Tauri/React frontend, AlterChat ensures that your cryptographic keys, social graph, and message history never leave your local device unless explicitly encrypted and routed through an anonymizing network.
+AlterChat is an experimental secure messaging stack built around a simple
+principle: identity, history, policy, and keys should belong to the user, not to
+a central service.
 
-By completely stripping away the concept of "servers" and "accounts", AlterChat shifts the paradigm of digital communication back to its cypherpunk roots.
+The repository combines a Rust/libp2p protocol core with a Tauri desktop
+application. The current implementation focuses on local-first encrypted
+profiles, peer discovery, CRDT-backed rooms, direct messages, trust controls,
+role-based room governance, file chunking, WebRTC signaling, onion packet
+experiments, and a small bootstrap daemon for community-run discovery nodes.
 
-### 🌌 Core Philosophy
-1. **Zero Trust, Zero Servers:** There is no central database. If the creators of AlterChat disappear tomorrow, the network will continue to operate flawlessly as long as two peers exist.
-2. **Metadata is the Message:** In modern surveillance, who you talk to is as important as what you say. AlterChat utilizes Tor (Onion routing) and I2P integrations to obfuscate the origin, destination, and timing of packets.
-3. **Cryptographic Supremacy:** We do not rely on standard TLS. We employ a custom Double Ratchet implementation coupled with X3DH (Extended Triple Diffie-Hellman) for perfect forward secrecy and post-compromise security.
+This is security-sensitive software and should be treated as an alpha-stage
+research implementation until it has received independent review. The codebase
+contains real cryptographic building blocks, but the protocol and application
+surface are still evolving.
 
----
+## Table of Contents
 
-## 🚀 Deep Technical Architecture
+- [Why AlterChat](#why-alterchat)
+- [Current Capabilities](#current-capabilities)
+- [Repository Layout](#repository-layout)
+- [Architecture at a Glance](#architecture-at-a-glance)
+- [Security Posture](#security-posture)
+- [Quick Start](#quick-start)
+- [Running the Desktop App](#running-the-desktop-app)
+- [Running a Bootstrap Node](#running-a-bootstrap-node)
+- [Operational Concepts](#operational-concepts)
+- [Development Workflow](#development-workflow)
+- [Documentation Map](#documentation-map)
+- [Project Status](#project-status)
+- [License](#license)
+- [Support](#support)
 
-The architecture of AlterChat is split into two primary domains, bridged by highly optimized IPC (Inter-Process Communication).
+## Why AlterChat
 
-### 1. The Headless Rust Core (`alterchat-core`)
-The heart of the system is driven by a massive `tokio::select!` asynchronous event loop that handles thousands of concurrent multiplexed streams.
+Most chat systems hide complexity behind accounts, service operators, and
+central message stores. AlterChat goes in the opposite direction:
 
-- **Libp2p Network Stack:** Uses Kademlia DHT for decentralized peer discovery, Gossipsub for pub/sub mechanisms (used in group chats and governance), and WebRTC/TCP transports.
-- **Double Ratchet & X3DH:** Every single message rotates its cryptographic key. If an attacker compromises your device today, they cannot decrypt the messages you sent yesterday (Forward Secrecy), nor can they decrypt the messages you will send tomorrow once the ratchet turns (Post-Compromise Security).
-- **Onion Routing & Pluggable Transports:** To bypass Deep Packet Inspection (DPI) and state-level firewalls, AlterChat implements Obfs4 and Snowflake pluggable transports natively.
+- **No central account authority:** a peer identity is derived from a local
+  libp2p Ed25519 keypair.
+- **Local-first storage:** profiles, settings, rooms, private messages, trust
+  edges, room roles, file manifests, and plugin records live in a local SQLite
+  database opened through SQLCipher support.
+- **Peer-to-peer network model:** libp2p provides Kademlia, mDNS, Identify,
+  Gossipsub, request-response, relay, DCUtR, TCP, QUIC, Noise, and Yamux.
+- **Human-verifiable trust:** contacts can be given local trust levels, blocked,
+  muted, verified with safety numbers, and connected through signed trust edges.
+- **Defense-in-depth design:** transport encryption, profile encryption, message
+  encryption, optional traffic padding, proof-of-work primitives, and onion
+  packet experiments are kept as separate layers.
+- **No silent cloud fallback:** the app is designed around explicit peer
+  routing, local configuration, and community bootstrap nodes.
 
-### 2. The Tauri Presentation Layer (`alterchat-ui`)
-A blazingly fast, memory-safe frontend that executes OS-level commands via strictly defined capability gates.
-- **Strict Content Security Policy (CSP):** The React frontend is completely sandboxed. It cannot make outbound HTTP requests. All network IO is forced through the Rust core via `invoke()` IPC calls.
-- **Local-First SQLite:** Your messages are stored locally in an encrypted SQLite database (using SQLCipher). The decryption key is derived from your master password using Argon2id.
+## Current Capabilities
+
+### Messaging
+
+- Global CRDT room named `alterchat-global`.
+- Joinable/savable group rooms with optional room passwords.
+- Direct peer messages with local message history.
+- Message TTL support in the UI and local cleanup path.
+- Search index for room and DM text.
+- Anonymous channel command path for temporary room identifiers.
+
+### Identity and Profiles
+
+- Password-derived profile names:
+  - `alterchat_<hash-prefix>.db`
+  - `keypair_<hash-prefix>.bin`
+- Amnesic mode using in-memory paths.
+- Encrypted libp2p keypair loading/generation.
+- X25519 offline public key generation for peer bootstrap and safety numbers.
+- `alterchat://connect?peer=...&pk=...` URI generation.
+
+### Cryptography
+
+- Ed25519 identity keys through libp2p.
+- X25519 public-key encryption for peer payloads.
+- AES-256-GCM for local encrypted payloads and file chunks.
+- Argon2id-based file encryption helpers.
+- X3DH-style shared-secret generation with ML-KEM-768 hybrid material.
+- Double Ratchet implementation with skipped-message handling.
+- Simpler symmetric ratchet compatibility path for current DM flows.
+- Safety number derivation from peer public keys.
+- Sealed-sender style encrypted envelope helpers.
+
+### Networking
+
+- libp2p Kademlia DHT for discovery and records.
+- mDNS for local-network zero-configuration discovery.
+- Gossipsub for room CRDT state publication.
+- request-response protocol for files, DMs, capabilities, plugin events, PoW
+  messages, WebRTC signaling, and onion forwarding.
+- Relay server/client and DCUtR behaviours are wired into the swarm.
+- Tor transport integration through the vendored `libp2p-community-tor` crate.
+- QUIC transport preference path.
+- I2P and SOCKS5 configuration fields exist, with I2P SOCKS proxy routing still
+  marked as TODO in code.
+
+### Governance and Trust
+
+- Signed invite tokens with expiry, use limits, and permissions.
+- Default room roles and signed permission grants.
+- Signed trust edges.
+- Local trust thresholds for DMs, files, and invites.
+- Local peer controls: block, mute, rate limit, and PoW requirement flags.
+- Distributed invite revocation record path.
+
+### Files, Media, and Storage
+
+- File manifests with 256 KiB chunking.
+- AES-256-GCM chunk encryption plus plaintext hash verification.
+- Storage quotas and retention settings.
+- Local chunk store under `alterchat_storage/<profile>`.
+- WebRTC signaling over libp2p request-response.
+- Experimental media E2EE path using browser insertable streams.
+- SFU host election heuristic based on local/peer capacity scores.
+
+### Plugins and Extensibility
+
+- Plugin manifest and capability policy model in `alterchat-core`.
+- Tauri commands to save and list plugin manifests.
+- Plugin event request-response messages.
+- Plugin execution remains a sensitive extension surface and should be reviewed
+  carefully before enabling untrusted code.
+
+## Repository Layout
+
+```text
+AlterChat-main/
+├─ alterchat-core/             Rust protocol, crypto, storage, network, governance
+├─ alterchat-ui/               Tauri v2 desktop app with React frontend
+│  ├─ src/                     React UI, WebRTC helpers, components
+│  └─ src-tauri/               Tauri backend, SQLite schema, IPC commands
+├─ alterchat-bootstrap/        Headless Kademlia bootstrap node
+├─ libp2p-community-tor/       Vendored Tor transport adapter for libp2p
+├─ .github/                    CI, release workflow, issue and PR templates
+├─ ARCHITECTURE.md             Protocol and module architecture
+├─ THREAT_MODEL.md             Threat model and mitigations
+├─ SECURITY.md                 Vulnerability reporting policy
+└─ CONTRIBUTING.md             Contribution workflow
+```
+
+## Architecture at a Glance
 
 ```mermaid
-graph TD
-    subgraph UI [Tauri Webview (React/TS)]
-        React[React Components] --> IPC[Tauri IPC Bridge]
+flowchart TD
+    subgraph Desktop["Tauri Desktop Application"]
+        React["React UI"]
+        IPC["Tauri IPC commands"]
+        DB["SQLCipher-backed SQLite profile"]
+        React <--> IPC
+        IPC <--> DB
     end
 
-    subgraph Core [Rust Backend (tokio)]
-        IPC --> FFI[Command Handler]
-        FFI --> EventLoop[Main Event Loop]
-        EventLoop --> DHT[Kademlia DHT]
-        EventLoop --> Crypto[Double Ratchet Engine]
-        EventLoop --> Storage[(Encrypted SQLite)]
+    subgraph Core["alterchat-core"]
+        Crypto["Crypto primitives\nX25519, X3DH, ML-KEM, Ratchets"]
+        Rooms["Automerge CRDT rooms"]
+        Governance["Invites, roles, trust edges"]
+        Storage["File manifests and encrypted chunks"]
+        Network["libp2p swarm"]
     end
 
-    subgraph Network [Global P2P Network]
-        DHT <--> |Obfs4/Tor| Node2[Peer Node]
-        DHT <--> |Noise Protocol| Node3[Peer Node]
+    subgraph P2P["Peer-to-peer network"]
+        DHT["Kademlia DHT"]
+        Gossip["Gossipsub rooms"]
+        RR["Request-response"]
+        Relay["Relay / DCUtR / Tor experiments"]
     end
+
+    IPC --> Core
+    Network --> DHT
+    Network --> Gossip
+    Network --> RR
+    Network --> Relay
+    Crypto --> RR
+    Rooms --> Gossip
+    Governance --> DB
+    Storage --> DB
 ```
 
----
+The detailed architecture is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## 💻 Installation & Compilation Guide
+## Security Posture
 
-Because AlterChat is deeply integrated with the OS for secure storage and network operations, compiling from source is the recommended approach for developers and security auditors.
+AlterChat is designed with strong security goals, but the repository should not
+be advertised as audited or production-ready.
 
-### System Prerequisites
-Ensure you have the following toolchains installed:
-1. **Rust (latest stable):** `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-2. **Node.js (v20+):** Required for the React frontend build pipeline.
-3. **OS-Specific Dependencies:**
-   - **Debian/Ubuntu:** `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
-   - **macOS:** Xcode Command Line Tools (`xcode-select --install`)
-   - **Windows:** Visual Studio C++ Build Tools.
+Implemented foundations:
 
-### Build Instructions
+- libp2p Noise transport encryption.
+- SQLCipher-backed local database opening through `rusqlite`.
+- Argon2id and AES-256-GCM helper functions for encrypted local material.
+- Ed25519 signatures for governance artifacts.
+- X25519 and ML-KEM-768 hybrid material in the X3DH path.
+- Double Ratchet module with unit tests for bidirectional and out-of-order
+  messages.
+- Local trust thresholds, block/mute controls, and rate limiting.
+- Traffic padding, chaff payload, and proof-of-work primitives.
+- Panic-wipe commands for active profile, message database, or all local
+  profiles.
 
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/onurbaydas/AlterChat.git
-   cd AlterChat
-   ```
+Important limitations:
 
-2. **Initialize the Frontend:**
-   Navigate into the UI directory and install the TypeScript dependencies.
-   ```bash
-   cd alterchat-ui
-   npm install
-   ```
+- No independent security audit has been completed.
+- The Tauri config currently has `csp: null`; production releases should define
+  a strict Content Security Policy.
+- Some privacy features are experimental or partially wired. I2P SOCKS routing,
+  full pluggable transport deployment, and production-grade relay policy need
+  additional implementation review.
+- WebRTC media E2EE uses browser APIs that may degrade when peer keys are not
+  available.
+- The local database key is derived from the login password path; review and
+  hardening are recommended before high-risk use.
 
-3. **Development Mode (Hot-Reloading):**
-   To run the app with live-reloading (React + Rust), use the Tauri CLI:
-   ```bash
-   npm run tauri dev
-   ```
-   *Note: In development mode, the SQLite database is stored in a temporary `./.dev_data` folder and the Kademlia DHT will connect to local bootstrap nodes if available.*
+See [THREAT_MODEL.md](THREAT_MODEL.md) and [SECURITY.md](SECURITY.md).
 
-4. **Production Build:**
-   To compile a highly optimized, stripped binary for release:
-   ```bash
-   npm run tauri build
-   ```
-   The compiled `.exe`, `.dmg`, or `.AppImage` will be located in `src-tauri/target/release/bundle/`.
+## Quick Start
 
----
+### Prerequisites
 
-## 🛠 Usage & Operational Guide
+- **Rust 1.95+**. The current dependency graph uses `sysinfo 0.39.x`, which
+  requires Rust 1.95 or newer.
+- **Node.js 20+** and npm.
+- **Tauri v2 system dependencies** for your platform.
+- On Linux, install WebKitGTK and related build packages.
 
-### Bootstrapping the Node
-When you first launch AlterChat, you do not "create an account". Instead, the application generates a cryptographic Ed25519 keypair. The public key becomes your "Identity" (your Address), and the private key is encrypted at rest.
+Debian/Ubuntu example:
 
-The node will automatically attempt to join the global DHT via community-hosted bootstrap nodes. If standard internet is censored, navigate to **Settings -> Network** and enable **Obfs4 Bridge Mode**.
-
-### Establishing a Secure Session
-1. Share your Public Identity Hash (e.g., `alter1q8...`) with a peer out-of-band.
-2. When you initiate a chat, AlterChat performs an asynchronous X3DH handshake using the DHT.
-3. Once the PreKeys are exchanged, the session is established. Both nodes will begin advancing their local Double Ratchet chains.
-
-### Advanced: Running a Bootstrap Node
-To help the network survive, you can run the headless `alterchat-bootstrap` daemon on a VPS:
 ```bash
-cd alterchat-bootstrap
-cargo run --release -- --port 4001 --announce-ip <YOUR_PUBLIC_IP>
+sudo apt update
+sudo apt install -y \
+  build-essential curl wget file libssl-dev \
+  libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+  libwebkit2gtk-4.1-dev
 ```
 
----
+Clone:
 
-## 🤝 Development & Contribution Workflow
-
-We strictly adhere to a **Security-First** contribution model. Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for granular rules on PR submissions.
-
-### Code Organization
-- `alterchat-core/`: The headless Rust library. Contains all cryptography, P2P networking, and database logic.
-- `alterchat-ui/`: The Tauri application. Contains `src-tauri` (the host) and `src` (the React webview).
-- `alterchat-bootstrap/`: A lightweight discovery daemon for network resilience.
-
-### Testing the Cryptography
-All cryptographic state machines (Ratchet, X3DH) are covered by rigorous unit tests. Before submitting a PR, you MUST ensure tests pass:
 ```bash
-cargo test --package alterchat-core --lib crypto
-cargo clippy --all-targets --all-features -- -D warnings
+git clone https://github.com/onurbaydas/AlterChat.git
+cd AlterChat
 ```
 
----
+Check the Rust workspace:
 
-## 🔐 Threat Model & Security Audits
+```bash
+rustup update stable
+cargo check --workspace
+```
 
-For a terrifyingly detailed breakdown of how we mitigate Sybil attacks, Eclipse attacks, Metadata Analysis, and Quantum threats, please read the exhaustive [THREAT_MODEL.md](THREAT_MODEL.md) document.
+If `cargo check` fails with a `sysinfo requires rustc 1.95` message, update your
+Rust toolchain first.
 
----
+## Running the Desktop App
 
-## 🖤 Support & Donate
-If you believe in decentralized, censorship-resistant communication and want to support the ongoing development of AlterChat, consider donating. Your support helps keep the network sovereign, private, and independent.
+```bash
+cd alterchat-ui
+npm install
+npm run tauri dev
+```
 
-- **Monero (XMR):** `43bMdGQAkByAkbiGkgsuGbWf5afr2RBa42swxuqe7M8ohUSVbzaFAQabDivDtLcXJwQDNztZyhMSoiFkSvsCNouV2jACZyA` _(Privacy focused)_
+Build a desktop bundle:
+
+```bash
+cd alterchat-ui
+npm run tauri build
+```
+
+The Tauri build output is created under `alterchat-ui/src-tauri/target/`.
+
+## Running a Bootstrap Node
+
+The bootstrap daemon is intentionally small: it creates a libp2p Kademlia server
+node, listens on TCP port `4001`, identifies peers, and adds their listen
+addresses to the DHT routing table.
+
+```bash
+cargo run --package alterchat-bootstrap --release
+```
+
+Expected output includes a multiaddr similar to:
+
+```text
+/ip4/0.0.0.0/tcp/4001/p2p/<PEER_ID>
+```
+
+Community bootstrap addresses are currently configured as an empty list in
+`alterchat-core/src/network.rs`. Add real community-operated multiaddrs through
+reviewed pull requests, not as a central authority.
+
+## Operational Concepts
+
+### Profiles
+
+On login, the password is hashed to derive profile-specific local paths. Normal
+mode stores a SQLCipher-backed profile database and encrypted keypair file on
+disk. Amnesic mode uses in-memory paths and is intended for sessions that should
+not leave a durable profile.
+
+### Rooms
+
+Rooms use Automerge CRDT documents. A local room state is saved in SQLite and
+published over Gossipsub. Peers merge incoming CRDT bytes and emit UI history
+events.
+
+### Direct Messages
+
+Direct messages are sent over libp2p request-response. The codebase contains
+both a symmetric ratchet state path and a fuller Double Ratchet module. The X3DH
+hybrid handshake path is present and should be the preferred direction for
+future protocol hardening.
+
+### Trust
+
+Trust is local by design. Peer trust scores, block/mute state, PoW requirement,
+and rate limits are stored in the local database. Signed trust edges can be
+created and listed, but users remain responsible for deciding what trust means
+for their own device.
+
+### Files
+
+Files can be split into 256 KiB chunks, encrypted with AES-256-GCM, written to a
+profile-specific local chunk directory, and indexed by manifest. Retention and
+quota controls live in storage settings.
+
+### Panic Wipe
+
+The panic-wipe path attempts to overwrite files with zeroes before deletion and
+then exits the process. On modern SSDs, journals, snapshots, cloud sync, and OS
+caches can still retain data. Treat panic wipe as best-effort local hygiene, not
+forensic erasure.
+
+## Development Workflow
+
+Common checks:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+```
+
+Frontend checks:
+
+```bash
+cd alterchat-ui
+npm install
+npm run build
+```
+
+Security-sensitive changes should include tests or a clear manual verification
+note. This includes changes to:
+
+- key derivation and encrypted storage
+- X3DH, Double Ratchet, sealed sender, or safety numbers
+- DHT record keys and peer routing
+- SQLite schema or profile migration
+- Tauri command allowlists and IPC payloads
+- panic wipe or vault import/export
+- file chunk encryption and quota enforcement
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full process.
+
+## Documentation Map
+
+- [ARCHITECTURE.md](ARCHITECTURE.md): module-by-module design and event flow.
+- [THREAT_MODEL.md](THREAT_MODEL.md): attacker model, mitigations, and open
+  risks.
+- [SECURITY.md](SECURITY.md): private vulnerability reporting policy.
+- [CONTRIBUTING.md](CONTRIBUTING.md): development and review workflow.
+- [alterchat-ui/README.md](alterchat-ui/README.md): desktop frontend details.
+- [libp2p-community-tor/README.md](libp2p-community-tor/README.md): Tor
+  transport notes and misuse warnings.
+
+## Project Status
+
+AlterChat is an active prototype. The codebase is valuable for experimentation,
+local network testing, and protocol development, but it needs hardening before
+being trusted for high-risk communication.
+
+Suggested next milestones:
+
+- Replace `csp: null` with a production CSP.
+- Decide on one canonical DM protocol path and migrate old state safely.
+- Finish I2P/SOCKS5 outbound routing or remove unsupported settings from the UI.
+- Add migration tests for SQLite schema evolution.
+- Add end-to-end integration tests for two local nodes.
+- Document and test bootstrap-node admission policy.
+- Run independent cryptographic and Tauri security reviews.
+
+## License
+
+AlterChat is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+## Support
+
+If you want to support decentralized, censorship-resistant communication
+research, donations are welcome:
+
+- **Monero (XMR):** `43bMdGQAkByAkbiGkgsuGbWf5afr2RBa42swxuqe7M8ohUSVbzaFAQabDivDtLcXJwQDNztZyhMSoiFkSvsCNouV2jACZyA`
 - **Bitcoin (BTC):** `bc1q66wc9qq5w5k219ayv9mgm9jc3dkan757a7ufst`
 - **Ethereum (ETH / ERC-20):** `0xC47BDDc11F70eb48f3c261186BdAA5A16E4448D0`

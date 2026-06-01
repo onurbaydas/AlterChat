@@ -1,46 +1,70 @@
-[![Continuous integration](https://github.com/umgefahren/libp2p-tor/actions/workflows/ci.yml/badge.svg)](https://github.com/umgefahren/libp2p-tor/actions/workflows/ci.yml)
-[![docs.rs](https://img.shields.io/docsrs/libp2p-community-tor?style=flat-square)](https://docs.rs/libp2p-community-tor/latest)
-[![Crates.io](https://img.shields.io/crates/v/libp2p-community-tor?style=flat-square)](https://crates.io/crates/libp2p-community-tor)
+# libp2p Community Tor Transport
 
-# libp2p Tor
+This directory contains the vendored `libp2p-community-tor` transport used by
+AlterChat to experiment with Tor-backed libp2p connections.
 
-Tor based transport for libp2p. Connect through the Tor network to TCP listeners.
+The crate originates from the community `libp2p-tor` work and is built on top of
+Arti. It allows libp2p to dial TCP listeners through the Tor network.
 
-Build on top of [Arti](https://gitlab.torproject.org/tpo/core/arti).
+## Why It Is Vendored Here
 
-## ⚠️ Misuse warning ⚠️ - read carefully before using
+AlterChat needs a reviewable Tor transport path while its networking model is
+still evolving. Vendoring the crate makes it easier to audit changes together
+with the rest of the repository and to keep protocol experiments reproducible.
 
-Although the sound of "Tor" might convey a sense of security it is *very* easy to misuse this
-crate and leaking private information while using. Study libp2p carefully and try to make sure
-you fully understand it's current limits regarding privacy. I.e. using identify might already
-render this transport obsolete.
+## Important Misuse Warning
 
-This transport explicitly **doesn't** provide any enhanced privacy if it's just used like a regular transport.
-Use with caution and at your own risk. **Don't** just blindly advertise Tor without fully understanding what you
-are dealing with.
+Tor transport does not automatically make a libp2p application anonymous.
 
-### Add to your dependencies
+Privacy can still be lost through:
 
-```bash
-cargo add libp2p-community-tor
-```
+- libp2p Identify data
+- stable peer IDs
+- DHT records
+- application-level metadata
+- bootstrap choices
+- timing and traffic volume
+- direct transports enabled at the same time
 
-This crate uses tokio with rustls for its runtime and TLS implementation.
-No other combinations are supported.
+Use this transport only after reviewing what the application reveals above the
+transport layer.
 
-- [`rustls`](https://github.com/rustls/rustls)
-- [`tokio`](https://github.com/tokio-rs/tokio)
+## Minimal Example
 
-### Example
 ```rust
-let address = "/dns/www.torproject.org/tcp/1000".parse()?;
-let mut transport = libp2p_community_tor::TorTransport::bootstrapped().await?;
-// we have achieved tor connection
-let _conn = transport.dial(address)?.await?;
+use libp2p::core::Transport;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let address = "/dns/www.torproject.org/tcp/443".parse()?;
+    let mut transport = libp2p_community_tor::TorTransport::bootstrapped().await?;
+    let _conn = transport.dial(address)?.await?;
+    Ok(())
+}
 ```
 
-### About
+## Runtime Notes
 
-This crate originates in a PR to bring Tor support too rust-libp2p. Read more about it here: libp2p/rust-libp2p#2899
+- Uses Tokio.
+- Uses rustls-compatible Arti runtime components.
+- Tor bootstrap can be slow and should be surfaced clearly in UI/CLI flows.
+- A Tor path should be paired with careful application-layer privacy review.
 
-License: MIT
+## AlterChat Integration Notes
+
+`alterchat-core/src/network.rs` creates a Tor transport when
+`NetworkPrivacyConfig.proxy_mode` is `Tor`. The transport is upgraded through
+libp2p and authenticated with Noise before Yamux multiplexing.
+
+Before treating Tor mode as a strong privacy guarantee, audit:
+
+- whether Identify should be disabled or minimized
+- which DHT records are published
+- whether direct listeners remain enabled
+- how bootstrap nodes are selected
+- whether peer IDs should be rotated for specific use cases
+
+## License
+
+This vendored crate keeps its original MIT license. AlterChat as a whole is
+licensed under AGPL-3.0; see the repository root for details.
