@@ -13,6 +13,7 @@ pub mod pow;
 pub mod push;
 pub mod sharding;
 pub mod spam;
+pub mod transfer;
 pub mod x3dh; // For Phase 5
 
 pub fn init_tracing() {

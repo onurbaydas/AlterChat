@@ -25,7 +25,7 @@ pub struct FileManifest {
     pub encrypted_key: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncryptedChunk {
     pub index: u64,
     pub nonce: [u8; 12],

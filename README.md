@@ -127,6 +127,10 @@ central message stores. AlterChat goes in the opposite direction:
 
 ### Files, Media, and Storage
 
+- Ask-before-accept peer-to-peer file transfer: per-file AES-256-GCM key
+  sealed to the friend's X25519 key, 256 KiB chunks pulled with a bounded
+  window and retries, SHA-256 verified, saved to Downloads without
+  overwriting (size, concurrency, trust and quota limits).
 - File manifests with 256 KiB chunking.
 - AES-256-GCM chunk encryption plus plaintext hash verification.
 - Storage quotas and retention settings.
@@ -471,7 +475,9 @@ Suggested next milestones:
 - Send incremental CRDT changes and sign room messages. Whole-document
   broadcasts hit gossipsub size limits, and senders are unauthenticated.
 - Finish I2P/SOCKS5 outbound routing (currently refused: fail closed).
-- Implement receiving of `File` requests and the WASM plugin sandbox.
+- Implement the WASM plugin sandbox.
+- File transfer: resume after restart, sending to offline peers, and a
+  longer request timeout for slow (Tor) links.
 - Ship community bootstrap addresses.
 - Add migration tests for SQLite schema evolution.
 - Add end-to-end integration tests for two local nodes.

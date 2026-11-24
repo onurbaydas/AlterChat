@@ -465,3 +465,42 @@ body {
   justify-content: flex-end;
   gap: 12px;
 }
+
+/* File transfers */
+.file-transfers {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 900;
+  width: min(360px, calc(100vw - 32px));
+  max-height: 50vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-transfer {
+  background: var(--bg-panel);
+  border: 1px solid var(--accent-cyan-glow);
+  border-radius: 8px;
+  padding: 10px 12px;
+  backdrop-filter: blur(8px);
+}
+.file-transfer-failed { border-color: var(--accent-red); }
+.file-transfer-done { border-color: var(--accent-green); }
+.file-transfer-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-transfer-meta { opacity: 0.7; font-size: 0.85em; }
+.file-transfer progress { width: 100%; margin-top: 6px; }
+.file-transfer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.file-transfer-actions .file-transfer-meta { margin-right: auto; }

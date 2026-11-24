@@ -16,6 +16,19 @@ import type {
   PeerSettings, RoomSettings, WebRtcStream 
 } from "./types";
 
+type FileTransferItem = {
+  transferId: string;
+  peerId: string;
+  filename: string;
+  size: number;
+  direction: 'send' | 'receive';
+  status: 'offer' | 'active' | 'done' | 'failed';
+  done: number;
+  total: number;
+  path?: string;
+  reason?: string;
+};
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
@@ -99,6 +112,9 @@ function App() {
   // File Transfer State
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedPeerFile, setSelectedPeerFile] = useState<string>("");
+  const [fileTransfers, setFileTransfers] = useState<Record<string, FileTransferItem>>({});
+  const [fileMaxMb, setFileMaxMb] = useState(100);
+  const [fileMaxConcurrent, setFileMaxConcurrent] = useState(3);
 
   // WebRTC Full Mesh State
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -192,6 +208,9 @@ function App() {
 
     // Load Peer ID
     invoke("get_peer_id").then(id => setPeerId(id as string)).catch(console.error);
+    invoke<{ max_file_size_mb: number; max_concurrent_transfers: number }>("get_file_transfer_settings")
+      .then(s => { setFileMaxMb(s.max_file_size_mb); setFileMaxConcurrent(s.max_concurrent_transfers); })
+      .catch(console.error);
 
     // Load Data
     const loadData = async () => {
@@ -361,6 +380,27 @@ function App() {
     const unlistenDmNeedsKey = listen<string>("dm-requires-pubkey", (e) => {
       alert(`Message to ${e.payload.substring(0, 8)}… was not sent: an encrypted session is not available yet (missing public key, or the peer must message you first).`);
     });
+    const updateTransfer = (id: string, patch: Partial<FileTransferItem>) =>
+      setFileTransfers(prev => prev[id] ? { ...prev, [id]: { ...prev[id], ...patch } } : prev);
+    const unlistenFileOffer = listen<{ transfer_id: string; peer_id: string; filename: string; size: number }>("file-offer", (e) => {
+      const o = e.payload;
+      setFileTransfers(prev => ({ ...prev, [o.transfer_id]: {
+        transferId: o.transfer_id, peerId: o.peer_id, filename: o.filename, size: o.size,
+        direction: 'receive', status: 'offer', done: 0, total: 0,
+      } }));
+    });
+    const unlistenFileProgress = listen<{ transfer_id: string; done_chunks: number; total_chunks: number }>("file-progress", (e) => {
+      updateTransfer(e.payload.transfer_id, { status: 'active', done: e.payload.done_chunks, total: e.payload.total_chunks });
+    });
+    const unlistenFileReceived = listen<{ transfer_id: string; path: string; filename: string }>("file-received", (e) => {
+      updateTransfer(e.payload.transfer_id, { status: 'done', path: e.payload.path });
+    });
+    const unlistenFileSent = listen<{ transfer_id: string }>("file-sent", (e) => {
+      updateTransfer(e.payload.transfer_id, { status: 'done' });
+    });
+    const unlistenFileFailed = listen<{ transfer_id: string; reason: string }>("file-transfer-failed", (e) => {
+      updateTransfer(e.payload.transfer_id, { status: 'failed', reason: e.payload.reason });
+    });
     const unlistenDmBlocked = listen<string>("private-message-blocked", (e) => {
       alert(`Message to ${e.payload.substring(0, 8)}… blocked by your trust settings.`);
     });
@@ -370,6 +410,11 @@ function App() {
       unlistenRoomJoinFailed.then(f => f());
       unlistenDmNeedsKey.then(f => f());
       unlistenDmBlocked.then(f => f());
+      unlistenFileOffer.then(f => f());
+      unlistenFileProgress.then(f => f());
+      unlistenFileReceived.then(f => f());
+      unlistenFileSent.then(f => f());
+      unlistenFileFailed.then(f => f());
       unlistenMessage.then(f => f());
       unlistenHistory.then(f => f());
       unlistenPm.then(f => f());
@@ -738,6 +783,12 @@ function App() {
           acceptRelay,
           experimentalMediaE2ee,
         });
+        const fileSettings = await invoke<{ max_file_size_mb: number; max_concurrent_transfers: number }>(
+          "save_file_transfer_settings",
+          { settings: { max_file_size_mb: fileMaxMb, max_concurrent_transfers: fileMaxConcurrent } },
+        );
+        setFileMaxMb(fileSettings.max_file_size_mb);
+        setFileMaxConcurrent(fileSettings.max_concurrent_transfers);
         setMyNick(settingsNick);
         alert("Ayarlar kaydedildi. Ağ transport değişiklikleri sonraki oturumda geçerli olur.");
         setShowSettings(false);
@@ -863,15 +914,51 @@ function App() {
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && selectedPeerFile) {
-      try {
-        const buffer = await file.arrayBuffer();
-        await invoke("send_file", { peer_id: selectedPeerFile, filename: file.name, data: Array.from(new Uint8Array(buffer)) });
-        alert(`File ${file.name} sent to ${selectedPeerFile.substring(0,6)}`);
-      } catch (err) { console.error("File send error", err); }
-    }
+    const peer = selectedPeerFile;
     e.target.value = '';
+    if (!file || !peer) return;
+    if (file.size > fileMaxMb * 1024 * 1024) {
+      alert(`${file.name} is larger than the ${fileMaxMb} MiB limit.`);
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      const nameHex = Array.from(new TextEncoder().encode(file.name))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      // Raw IPC body: avoids serialising the file as a JSON number array.
+      const transferId = await invoke<string>("send_file", new Uint8Array(buffer), {
+        headers: { "x-peer-id": peer, "x-file-name": nameHex, "x-file-mime": file.type || "" },
+      });
+      setFileTransfers(prev => ({ ...prev, [transferId]: {
+        transferId, peerId: peer, filename: file.name, size: file.size,
+        direction: 'send', status: 'offer', done: 0, total: 0,
+      } }));
+    } catch (err) {
+      console.error("File send error", err);
+      alert(`Could not send ${file.name}: ${err}`);
+    }
   };
+
+  const respondToFileOffer = async (transferId: string, accept: boolean) => {
+    try {
+      await invoke(accept ? "accept_file_offer" : "reject_file_offer", { transferId });
+      if (accept) {
+        setFileTransfers(prev => prev[transferId] ? { ...prev, [transferId]: { ...prev[transferId], status: 'active' } } : prev);
+      }
+    } catch (err) { console.error(err); }
+  };
+
+  const openReceivedFile = async (transferId: string, reveal: boolean) => {
+    try {
+      await invoke<string>("open_received_file", { transferId, reveal });
+    } catch (err) { alert(`Cannot open file: ${err}`); }
+  };
+
+  const dismissTransfer = (transferId: string) =>
+    setFileTransfers(prev => { const next = { ...prev }; delete next[transferId]; return next; });
+
+  const formatBytes = (n: number) =>
+    n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`;
 
   const formatTime = (ts: number) => {
     const d = new Date(ts);
@@ -903,6 +990,59 @@ function App() {
     <div className="app-container">
       {/* Hidden file input */}
       <input type="file" ref={fileInputRef} style={{display: 'none'}} onChange={handleFileChange} />
+
+      {/* File transfers: incoming offers (ask before accept), progress, results */}
+      {Object.values(fileTransfers).length > 0 && (
+        <div className="file-transfers">
+          {Object.values(fileTransfers).map(t => {
+            const who = friends.find(f => f.peer_id === t.peerId)?.nickname || t.peerId.substring(0, 8);
+            const pct = t.total > 0 ? Math.round((t.done / t.total) * 100) : 0;
+            return (
+              <div key={t.transferId} className={`file-transfer file-transfer-${t.status}`}>
+                <div className="file-transfer-title" title={t.filename}>
+                  {t.direction === 'receive' ? '⬇' : '⬆'} {t.filename} <span className="file-transfer-meta">({formatBytes(t.size)}, {t.direction === 'receive' ? 'from' : 'to'} {who})</span>
+                </div>
+                {t.status === 'offer' && t.direction === 'receive' && (
+                  <div className="file-transfer-actions">
+                    <button className="peer-btn" onClick={() => respondToFileOffer(t.transferId, false)}>Reject</button>
+                    <button className="peer-btn" onClick={() => respondToFileOffer(t.transferId, true)}>Accept</button>
+                  </div>
+                )}
+                {t.status === 'offer' && t.direction === 'send' && (
+                  <div className="file-transfer-meta">Waiting for the recipient to accept…</div>
+                )}
+                {t.status === 'active' && (
+                  <>
+                    <progress max={100} value={pct} />
+                    <div className="file-transfer-actions">
+                      <span className="file-transfer-meta">{pct}%</span>
+                      <button className="peer-btn" onClick={() => respondToFileOffer(t.transferId, false)}>Cancel</button>
+                    </div>
+                  </>
+                )}
+                {t.status === 'done' && (
+                  <div className="file-transfer-actions">
+                    {t.direction === 'receive' && t.path ? (
+                      <>
+                        <span className="file-transfer-meta" title={t.path}>Saved</span>
+                        <button className="peer-btn" onClick={() => openReceivedFile(t.transferId, false)}>Open</button>
+                        <button className="peer-btn" onClick={() => openReceivedFile(t.transferId, true)}>Show in folder</button>
+                      </>
+                    ) : <span className="file-transfer-meta">Delivered</span>}
+                    <button className="peer-btn" onClick={() => dismissTransfer(t.transferId)}>✕</button>
+                  </div>
+                )}
+                {t.status === 'failed' && (
+                  <div className="file-transfer-actions">
+                    <span className="file-transfer-meta">Failed: {t.reason}</span>
+                    <button className="peer-btn" onClick={() => dismissTransfer(t.transferId)}>✕</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       
       {/* Panic Wipe Modal */}
       <PanicModal 
@@ -1021,6 +1161,11 @@ function App() {
                   <input type="number" min={1} value={storageQuotaMb} onChange={e => setStorageQuotaMb(parseInt(e.target.value) || 1)} />
                   <label>Storage retention days</label>
                   <input type="number" min={1} value={storageRetentionDays} onChange={e => setStorageRetentionDays(parseInt(e.target.value) || 1)} />
+                  <label>Max incoming/outgoing file size MiB</label>
+                  <input type="number" min={1} max={4096} value={fileMaxMb} onChange={e => setFileMaxMb(parseInt(e.target.value) || 1)} />
+                  <label>Max concurrent file transfers</label>
+                  <input type="number" min={1} max={16} value={fileMaxConcurrent} onChange={e => setFileMaxConcurrent(parseInt(e.target.value) || 1)} />
+                  <div className="settings-note">Incoming files always ask before downloading and go to your Downloads folder. Partial transfers count against the storage quota.</div>
                 </>
               )}
 

@@ -3,6 +3,7 @@
 #![allow(deprecated)]
 
 pub mod db;
+pub mod file_xfer;
 pub mod profile;
 #[macro_use]
 pub mod commands;
@@ -33,10 +34,24 @@ pub enum AppCommand {
         name: String,
         password: Option<String>,
     },
+    /// Prepared (already encrypted) outgoing file; see `file_xfer`.
     SendFile {
         peer_id: String,
+        offer: alterchat_core::transfer::FileOffer,
+        chunks: std::sync::Arc<Vec<storage::EncryptedChunk>>,
+    },
+    /// User answered a `file-offer` (or cancelled a transfer when `accept` is false).
+    FileDecision {
+        transfer_id: String,
+        accept: bool,
+    },
+    /// Reassembly of an incoming file finished (off the event loop).
+    FileFinalized {
+        transfer_id: String,
+        peer: PeerId,
         filename: String,
-        data: Vec<u8>,
+        size: u64,
+        result: Result<PathBuf, String>,
     },
     SendWebRtcSignal {
         peer_id: String,
@@ -96,6 +111,8 @@ pub struct AppState {
     keypair: tokio::sync::Mutex<Option<libp2p::identity::Keypair>>,
     pub peer_id: tokio::sync::Mutex<Option<String>>,
     pub offline_pubkey: tokio::sync::Mutex<Option<String>>,
+    /// transfer_id -> path of files received this session (for opening).
+    pub received_files: std::sync::Mutex<HashMap<String, PathBuf>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -741,6 +758,17 @@ fn rejection_for_request(
         P2pRequest::PowChallenge { .. } | P2pRequest::PowSolution { .. } => {
             P2pResponse::PowAck { success: false }
         }
+        P2pRequest::FileOffer { offer } => P2pResponse::FileOfferAck {
+            transfer_id: offer.transfer_id.clone(),
+            success: false,
+            message: "local policy rejected request".to_string(),
+        },
+        P2pRequest::FileChunkRequest { transfer_id, index } => P2pResponse::FileChunkData {
+            transfer_id: transfer_id.clone(),
+            index: *index,
+            chunk: None,
+        },
+        P2pRequest::FileFinished { .. } => P2pResponse::FileFinishedAck { success: false },
     }
 }
 
@@ -757,6 +785,7 @@ pub fn run() {
             keypair: tokio::sync::Mutex::new(None),
             peer_id: tokio::sync::Mutex::new(None),
             offline_pubkey: tokio::sync::Mutex::new(None),
+            received_files: std::sync::Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::social::get_peer_id, commands::messaging::send_message, commands::messaging::join_channel, commands::media::send_file, commands::settings::set_bootstrap_addr, commands::media::send_webrtc_signal,
@@ -776,7 +805,10 @@ pub fn run() {
             commands::settings::revoke_invite_global, commands::settings::join_anonymous_channel,
             commands::system::get_network_status, commands::system::get_crypto_capabilities,
             commands::network_cmds::revoke_invite_network, commands::network_cmds::publish_room_revocations,
-            commands::network_cmds::join_anonymous_channel_cmd
+            commands::network_cmds::join_anonymous_channel_cmd,
+            commands::files::accept_file_offer, commands::files::reject_file_offer,
+            commands::files::open_received_file, commands::files::get_file_transfer_settings,
+            commands::files::save_file_transfer_settings
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -805,6 +837,8 @@ pub fn run() {
                 const POW_BAN_THRESHOLD: u32 = 3;
                 let mut chaff_interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 let mut x3dh_rotation_interval = tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 3600));
+                let mut transfers = file_xfer::FileTransfers::idle();
+                let mut file_tick = tokio::time::interval(std::time::Duration::from_secs(5));
 
                 loop {
                     tokio::select! {
@@ -841,6 +875,12 @@ pub fn run() {
                                 }
                             }
                         }
+                        _ = file_tick.tick() => {
+                            if let Some(s) = &mut swarm {
+                                let notices = transfers.tick(std::time::Instant::now(), &mut |p, r| s.behaviour_mut().request_response.send_request(&p, r));
+                                file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
+                            }
+                        }
                         _ = chaff_interval.tick() => {
                             // Cover Traffic: periyodik sahte mesaj gönder
                             if cover_traffic_enabled {
@@ -875,6 +915,7 @@ pub fn run() {
                         Some(cmd) = rx.recv() => match cmd {
                             AppCommand::StartSession { db_path, db_key, keypair } => {
                                 current_db_path = Some(db_path.clone());
+                                transfers = file_xfer::FileTransfers::new(&storage_root_for_db(&db_path));
 
                                 let conn = match db::init_db(&db_path, &db_key) {
                                     Ok(c) => c,
@@ -1105,7 +1146,7 @@ pub fn run() {
                                     }
                                 }
                             }
-                            AppCommand::SendFile { peer_id, filename, data } => {
+                            AppCommand::SendFile { peer_id, offer, chunks } => {
                                 if let Some(conn) = &conn_opt {
                                     if !room_action_allowed(
                                             conn,
@@ -1118,13 +1159,54 @@ pub fn run() {
                                         continue;
                                     }
                                 }
-                                if let Some(s) = &mut swarm {
-                                    if let Ok(peer) = peer_id.parse::<PeerId>() {
-                                        let _ = s.behaviour_mut().request_response.send_request(
-                                            &peer,
-                                            alterchat_core::file_transfer::P2pRequest::File { filename, data },
-                                        );
+                                if let (Some(s), Ok(peer)) = (&mut swarm, peer_id.parse::<PeerId>()) {
+                                    let max = conn_opt.as_ref().map(file_xfer::TransferSettings::load).unwrap_or_default().max_concurrent();
+                                    let tid = offer.transfer_id.clone();
+                                    if let Err(reason) = transfers.start_outgoing(peer, offer, chunks, max, &mut |p, r| s.behaviour_mut().request_response.send_request(&p, r)) {
+                                        let _ = app_handle.emit("file-transfer-failed", file_xfer::FailedEvent { transfer_id: tid, peer_id, direction: "send", reason });
                                     }
+                                }
+                            }
+                            AppCommand::FileDecision { transfer_id, accept } => {
+                                if let Some(s) = &mut swarm {
+                                    let mut send = |p: PeerId, r| s.behaviour_mut().request_response.send_request(&p, r);
+                                    let notices = if accept {
+                                        transfers.accept(&transfer_id, &mut send)
+                                    } else {
+                                        transfers.cancel(&transfer_id, "cancelled by user", &mut send)
+                                    };
+                                    file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
+                                }
+                            }
+                            AppCommand::FileFinalized { transfer_id, peer, filename, size, result } => {
+                                let (ok, reason) = match &result {
+                                    Ok(path) => {
+                                        let state = app_handle.state::<AppState>();
+                                        state.received_files.lock().unwrap_or_else(|e| e.into_inner()).insert(transfer_id.clone(), path.clone());
+                                        let _ = app_handle.emit("file-received", file_xfer::ReceivedEvent {
+                                            transfer_id: transfer_id.clone(),
+                                            peer_id: peer.to_string(),
+                                            filename,
+                                            path: path.to_string_lossy().into_owned(),
+                                            size,
+                                        });
+                                        (true, String::new())
+                                    }
+                                    Err(e) => {
+                                        let _ = app_handle.emit("file-transfer-failed", file_xfer::FailedEvent {
+                                            transfer_id: transfer_id.clone(),
+                                            peer_id: peer.to_string(),
+                                            direction: "receive",
+                                            reason: e.clone(),
+                                        });
+                                        (false, "verification or write failed".to_string())
+                                    }
+                                };
+                                if let Some(s) = &mut swarm {
+                                    let _ = s.behaviour_mut().request_response.send_request(
+                                        &peer,
+                                        alterchat_core::file_transfer::P2pRequest::FileFinished { transfer_id, ok, reason },
+                                    );
                                 }
                             }
                             AppCommand::SetBootstrap { addr } => {
@@ -1472,7 +1554,10 @@ pub fn run() {
                                                     .as_ref()
                                                     .map(|p| p.rate_limit_per_minute)
                                                     .unwrap_or(runtime_config.rate_limit_per_minute);
-                                                if !rate_limit_allows(&mut rate_buckets, &peer_str, per_minute) {
+                                                // Chunk pulls for our own offers are paced by the
+                                                // recipient's window, not the request rate limit.
+                                                let file_pull = matches!(&request, alterchat_core::file_transfer::P2pRequest::FileChunkRequest { transfer_id, .. } if transfers.is_outgoing_to(transfer_id, &peer));
+                                                if !file_pull && !rate_limit_allows(&mut rate_buckets, &peer_str, per_minute) {
                                                     let _ = app_handle.emit("peer-rate-limited", peer_str);
                                                     let _ = s.behaviour_mut().request_response.send_response(
                                                         channel,
@@ -1482,26 +1567,58 @@ pub fn run() {
                                                 }
                                             }
                                             match request {
-                                                alterchat_core::file_transfer::P2pRequest::File { filename, data } => {
-                                                    let mut allowed = true;
-                                                    if let Some(conn) = &conn_opt {
-                                                        if let Ok(settings) = db::get_peer_settings(conn, &peer.to_string()) {
-                                                            if settings.blocked || settings.trust_level < db::load_setting(conn, "min_trust_file").ok().flatten().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) {
-                                                                allowed = false;
-                                                            }
-                                                        }
-                                                    }
-                                                    if !allowed {
-                                                        let _ = s.behaviour_mut().request_response.send_response(
-                                                            channel,
-                                                            alterchat_core::file_transfer::P2pResponse::FileAck { success: false, message: "Blocked by trust policy".to_string() }
-                                                        );
-                                                        continue;
-                                                    }
-                                                    let _ = app_handle.emit("file-received", (filename.clone(), data.len()));
+                                                alterchat_core::file_transfer::P2pRequest::File { .. } => {
+                                                    // Whole-file requests cannot carry real files (1 MiB
+                                                    // request limit) and bypass the accept prompt.
                                                     let _ = s.behaviour_mut().request_response.send_response(
                                                         channel,
-                                                        alterchat_core::file_transfer::P2pResponse::FileAck { success: true, message: "File received".to_string() }
+                                                        alterchat_core::file_transfer::P2pResponse::FileAck { success: false, message: "unsupported: use FileOffer".to_string() }
+                                                    );
+                                                }
+                                                alterchat_core::file_transfer::P2pRequest::FileOffer { offer } => {
+                                                    let tid = offer.transfer_id.clone();
+                                                    let result = match &conn_opt {
+                                                        Some(conn) => {
+                                                            let settings = db::get_peer_settings(conn, &peer.to_string()).ok();
+                                                            let storage = db::get_storage_settings(conn).ok();
+                                                            let policy = file_xfer::OfferPolicy {
+                                                                blocked: settings.as_ref().map(|p| p.blocked).unwrap_or(false),
+                                                                trust_level: settings.as_ref().map(|p| p.trust_level).unwrap_or(0),
+                                                                min_trust_file: runtime_config.min_trust_file,
+                                                                quota_bytes: storage.map(|st| st.quota_mb.max(1)).unwrap_or(512).saturating_mul(1024 * 1024),
+                                                                used_bytes: db::stored_chunk_bytes(conn).unwrap_or(0),
+                                                                limits: file_xfer::TransferSettings::load(conn),
+                                                            };
+                                                            transfers.handle_offer(peer, offer, &offline_secret_bytes, &policy)
+                                                        }
+                                                        None => Err("not ready".to_string()),
+                                                    };
+                                                    let (success, message) = match result {
+                                                        Ok(event) => {
+                                                            let _ = app_handle.emit("file-offer", event);
+                                                            (true, "awaiting user decision".to_string())
+                                                        }
+                                                        Err(reason) => {
+                                                            tracing::info!("Rejected file offer from {peer}: {reason}");
+                                                            (false, reason)
+                                                        }
+                                                    };
+                                                    let _ = s.behaviour_mut().request_response.send_response(
+                                                        channel,
+                                                        alterchat_core::file_transfer::P2pResponse::FileOfferAck { transfer_id: tid, success, message }
+                                                    );
+                                                }
+                                                alterchat_core::file_transfer::P2pRequest::FileChunkRequest { transfer_id, index } => {
+                                                    let (response, notice) = transfers.serve_chunk(peer, transfer_id, index);
+                                                    let _ = s.behaviour_mut().request_response.send_response(channel, response);
+                                                    file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notice.into_iter().collect());
+                                                }
+                                                alterchat_core::file_transfer::P2pRequest::FileFinished { transfer_id, ok, reason } => {
+                                                    let notices = transfers.handle_finished(peer, &transfer_id, ok, &reason);
+                                                    file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
+                                                    let _ = s.behaviour_mut().request_response.send_response(
+                                                        channel,
+                                                        alterchat_core::file_transfer::P2pResponse::FileFinishedAck { success: true }
                                                     );
                                                 }
                                                 alterchat_core::file_transfer::P2pRequest::FileChunk { transfer_id, index, total: _, content_hash, data } => {
@@ -1833,7 +1950,18 @@ pub fn run() {
                                             }
                                         }
                                     }
-                                    libp2p::request_response::Message::Response { .. } => {}
+                                    libp2p::request_response::Message::Response { request_id, response } => {
+                                        if let Some(s) = &mut swarm {
+                                            let notices = transfers.on_response(peer, request_id, response, &mut |p, r| s.behaviour_mut().request_response.send_request(&p, r));
+                                            file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
+                                        }
+                                    }
+                                }
+                            }
+                            SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::RequestResponse(libp2p::request_response::Event::OutboundFailure { request_id, .. })) => {
+                                if let Some(s) = &mut swarm {
+                                    let notices = transfers.on_outbound_failure(request_id, &mut |p, r| s.behaviour_mut().request_response.send_request(&p, r));
+                                    file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
                                 }
                             }
                             SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
