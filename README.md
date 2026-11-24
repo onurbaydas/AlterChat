@@ -31,6 +31,7 @@ surface are still evolving.
 
 ## Table of Contents
 
+- [Download and Install](#download-and-install)
 - [Why AlterChat](#why-alterchat)
 - [Current Capabilities](#current-capabilities)
 - [Repository Layout](#repository-layout)
@@ -45,6 +46,31 @@ surface are still evolving.
 - [Project Status](#project-status)
 - [License](#license)
 - [Support](#support)
+
+## Download and Install
+
+**Kullanıcılar için (Türkçe):** [Releases](https://github.com/onurbaydas/AlterChat/releases/latest)
+sayfasından işletim sisteminize uygun dosyayı indirin:
+
+| Sistem | Dosya |
+| --- | --- |
+| Windows 10/11 | `AlterChat_x.y.z_x64-setup.exe` (yönetici izni istemez) |
+| macOS | `AlterChat_x.y.z_*.dmg` |
+| Linux | `.AppImage` veya `.deb` |
+
+Kurup açın, "Yeni sığınak kur" ile bir takma ad ve şifre belirleyin, ardından
+davet bağlantınızı arkadaşlarınıza gönderin. Yeni sürümler çıktığında uygulama
+açılışta haber verir ve tek tıkla güncellenir (güncellemeler imzalıdır).
+
+**For users (English):** download the installer for your OS from the
+[latest release](https://github.com/onurbaydas/AlterChat/releases/latest),
+create a profile, and share your invite link. The app checks for signed
+updates on startup and installs them with one click.
+
+> Windows may show a SmartScreen "unknown publisher" warning until the
+> installer is code-signed: choose *More info → Run anyway*.
+
+Maintainers: see [RELEASING.md](RELEASING.md).
 
 ## Why AlterChat
 
@@ -545,6 +571,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full process.
 - [THREAT_MODEL.md](THREAT_MODEL.md): attacker model, mitigations, and open
   risks.
 - [SECURITY.md](SECURITY.md): private vulnerability reporting policy.
+- [RELEASING.md](RELEASING.md): building and publishing releases, updater keys.
 - [CONTRIBUTING.md](CONTRIBUTING.md): development and review workflow.
 - [alterchat-ui/README.md](alterchat-ui/README.md): desktop frontend details.
 - [libp2p-community-tor/README.md](libp2p-community-tor/README.md): Tor

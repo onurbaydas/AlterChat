@@ -7,7 +7,8 @@ import { SafetyNumbers } from "./components/SafetyNumbers";
 import { TrustGraph } from "./components/TrustGraph";
 import { VaultExport } from "./components/VaultExport";
 import { NetworkStatusBadge } from "./components/NetworkStatusBadge";
-import type { NetworkStatus } from "./components/NetworkStatusBadge";
+import type { NetworkStatus, Reachability } from "./components/NetworkStatusBadge";
+import { UpdateChecker } from "./components/UpdateChecker";
 import "./index.css";
 
 import { deriveMediaKey, makeE2EESenderTransform, makeE2EEReceiverTransform } from "./webrtc";
@@ -140,6 +141,7 @@ function App() {
 
   // Network status indicator
   const [networkStatus, setNetworkStatus] = useState<NetworkStatus>("connecting");
+  const [reachability, setReachability] = useState<Reachability>(null);
 
   useEffect(() => {
     invoke<string>("plugin:app|version")
@@ -296,6 +298,10 @@ function App() {
       }
     });
 
+    const unlistenReachability = listen<string>("network-reachability", (e) => {
+      const r = e.payload;
+      if (r === "direct" || r === "relayed" || r === "unreachable") setReachability(r);
+    });
     const unlistenNetworkStatus = listen<string>("network-status", (event: { payload: string }) => {
       const s = event.payload as NetworkStatus;
       if (s === "online" || s === "connecting" || s === "offline") {
@@ -425,6 +431,7 @@ function App() {
       unlistenPeerDiscovered.then(f => f());
       unlistenPeerExpired.then(f => f());
       unlistenNetworkStatus.then(f => f());
+      unlistenReachability.then(f => f());
       unlistenPeerConnected.then(f => f());
       unlistenPeerDisconnected.then(f => f());
       unlistenSignal.then(f => f());
@@ -992,6 +999,7 @@ function App() {
 
   return (
     <div className="app-container">
+      <UpdateChecker />
       {/* Hidden file input */}
       <input type="file" ref={fileInputRef} style={{display: 'none'}} onChange={handleFileChange} />
 
@@ -1318,7 +1326,7 @@ function App() {
       <div className="nav-panel glass-panel">
         <div className="nav-header">
           <span className="nav-icon">⬢</span> <span>ALTERCHAT</span>
-          <span style={{ marginLeft: 'auto' }}><NetworkStatusBadge status={networkStatus} /></span>
+          <span style={{ marginLeft: 'auto' }}><NetworkStatusBadge status={networkStatus} reachability={reachability} /></span>
         </div>
         
         <div className="nav-section">

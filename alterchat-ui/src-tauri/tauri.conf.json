@@ -60,6 +60,18 @@
     },
     "macOS": {
       "minimumSystemVersion": "10.15"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUxMUVCMEM5QjM2NkIwMDkKUldRSnNHYXp5YkFlNFNsSFpVZ1REVW51SGo5UnlFWjdGNlRDMTI1N3pLQWxWS2N1bTNPdTliRTMK",
+      "endpoints": [
+        "https://github.com/onurbaydas/AlterChat/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

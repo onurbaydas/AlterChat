@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (distribution)
+
+- In-app auto-update: the app checks GitHub Releases on startup and offers
+  signed updates (Turkish/English prompt). Updates are verified against the
+  public key in `tauri.conf.json`. The release workflow signs updater
+  artifacts and publishes `latest.json`. See RELEASING.md.
+- Per-user Windows installer (no admin), Turkish/English, embedded WebView2
+  bootstrapper; AlterChat icon; "rat bunker" theme; Turkish/English
+  onboarding with nickname, invite link and temporary-session button.
+- Network badge shows direct vs relayed connectivity.
+- `bootstrap/install.sh`: one-command systemd install; detects the server's
+  public IP and sets `ALTERCHAT_EXTERNAL_ADDRS` so the relay works behind
+  cloud 1:1 NAT.
+
 ### Added
 
 - **Internet connectivity behind NAT through circuit relay v2.**

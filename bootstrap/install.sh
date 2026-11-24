@@ -11,7 +11,8 @@
 #   3. Installs and starts a hardened systemd service.
 #   4. Prints the multiaddr to share with AlterChat users.
 #
-# Environment overrides: ALTERCHAT_BOOTSTRAP_PORT (default 4001), ALTERCHAT_REPO.
+# Environment overrides: ALTERCHAT_BOOTSTRAP_PORT (default 4001), ALTERCHAT_REPO,
+# ALTERCHAT_PUBLIC_IP (auto-detected if unset).
 set -euo pipefail
 
 REPO="${ALTERCHAT_REPO:-onurbaydas/AlterChat}"
@@ -61,6 +62,18 @@ log "Creating service user and data directory"
 id alterchat >/dev/null 2>&1 || useradd --system --home "$DATA" --shell /usr/sbin/nologin alterchat
 install -d -m 0700 -o alterchat -g alterchat "$DATA"
 
+# Public address of this server. Cloud VMs usually sit behind 1:1 NAT, so the
+# node cannot see its own public IP; without it the relay cannot hand out
+# usable reservations.
+PUBLIC_IP="${ALTERCHAT_PUBLIC_IP:-$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null || true)}"
+EXTERNAL_ADDRS=""
+if [ -n "$PUBLIC_IP" ]; then
+    EXTERNAL_ADDRS="/ip4/${PUBLIC_IP}/tcp/${PORT},/ip4/${PUBLIC_IP}/udp/${PORT}/quic-v1"
+    log "Public address: ${PUBLIC_IP}"
+else
+    log "Could not detect the public IP; set ALTERCHAT_PUBLIC_IP and re-run for relay support"
+fi
+
 log "Installing systemd service"
 cat > "$UNIT" <<EOF
 [Unit]
@@ -73,6 +86,7 @@ User=alterchat
 Group=alterchat
 Environment=ALTERCHAT_DATA_DIR=${DATA}
 Environment=ALTERCHAT_BOOTSTRAP_PORT=${PORT}
+Environment=ALTERCHAT_EXTERNAL_ADDRS=${EXTERNAL_ADDRS}
 Environment=RUST_LOG=info
 ExecStart=${BIN}
 Restart=on-failure
@@ -109,7 +123,7 @@ for _ in $(seq 1 20); do
 done
 [ -n "$peer" ] || die "service did not start; check: journalctl -u alterchat-bootstrap"
 
-ip="$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+ip="${PUBLIC_IP:-$(hostname -I | awk '{print $1}')}"
 echo
 log "AlterChat bootstrap node is running."
 echo "Share this address with AlterChat users (Settings -> Network -> Bootstrap list):"

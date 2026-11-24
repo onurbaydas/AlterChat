@@ -1,9 +1,12 @@
 import React from "react";
+import { detectLang } from "../i18n";
 
 export type NetworkStatus = "online" | "connecting" | "offline";
+export type Reachability = "direct" | "relayed" | "unreachable" | null;
 
 interface NetworkStatusBadgeProps {
   status: NetworkStatus;
+  reachability?: Reachability;
 }
 
 const DOT_BASE: React.CSSProperties = {
@@ -19,7 +22,7 @@ const CONTAINER: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   fontSize: 11,
-  fontFamily: "monospace",
+  fontFamily: "var(--font-ui)",
   padding: "3px 8px",
   borderRadius: 4,
   border: "1px solid rgba(255,255,255,0.08)",
@@ -28,18 +31,42 @@ const CONTAINER: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-const CONFIG: Record<NetworkStatus, { dotColor: string; label: string; textColor: string }> = {
-  online: { dotColor: "#44cc66", label: "Connected", textColor: "#44cc66" },
-  connecting: { dotColor: "#ffcc00", label: "Connecting...", textColor: "#ffcc00" },
-  offline: { dotColor: "#ff4444", label: "Offline", textColor: "#ff4444" },
+const LABELS = {
+  tr: {
+    online: "Bağlı",
+    connecting: "Bağlanıyor...",
+    offline: "Çevrimdışı",
+    direct: "doğrudan",
+    relayed: "relay üzerinden",
+    unreachable: "dışarıdan erişilemez",
+    title: "Ağ durumu",
+  },
+  en: {
+    online: "Connected",
+    connecting: "Connecting...",
+    offline: "Offline",
+    direct: "direct",
+    relayed: "via relay",
+    unreachable: "not reachable from outside",
+    title: "Network",
+  },
+} as const;
+
+const COLORS: Record<NetworkStatus, string> = {
+  online: "#7cff6b",
+  connecting: "#ffb000",
+  offline: "#ff5b3a",
 };
 
-export function NetworkStatusBadge({ status }: NetworkStatusBadgeProps) {
-  const { dotColor, label, textColor } = CONFIG[status];
+export function NetworkStatusBadge({ status, reachability = null }: NetworkStatusBadgeProps) {
+  const l = LABELS[detectLang()];
+  const color = COLORS[status];
+  const reach = reachability ? l[reachability] : null;
   return (
-    <div style={{ ...CONTAINER, color: textColor }} title={`Network: ${label}`}>
-      <span style={{ ...DOT_BASE, background: dotColor, boxShadow: `0 0 4px ${dotColor}` }} />
-      {label}
+    <div style={{ ...CONTAINER, color }} title={`${l.title}: ${l[status]}${reach ? ` (${reach})` : ""}`}>
+      <span style={{ ...DOT_BASE, background: color, boxShadow: `0 0 4px ${color}` }} />
+      {l[status]}
+      {status === "online" && reachability === "relayed" ? " ⇄" : ""}
     </div>
   );
 }

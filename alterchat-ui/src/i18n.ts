@@ -65,6 +65,11 @@ const dict = {
     backToStart: "başa dön",
     failed: "Bir şeyler ters gitti: ",
     lang: "English",
+    updateAvailable: "Yeni sürüm hazır",
+    updateNow: "Şimdi güncelle",
+    updating: "Güncelleniyor...",
+    later: "Sonra",
+    updateFailed: "Güncelleme başarısız: ",
   },
   en: {
     tagline: "Underground encrypted messaging",
@@ -108,6 +113,11 @@ const dict = {
     backToStart: "back to start",
     failed: "Something went wrong: ",
     lang: "Türkçe",
+    updateAvailable: "A new version is ready",
+    updateNow: "Update now",
+    updating: "Updating...",
+    later: "Later",
+    updateFailed: "Update failed: ",
   },
 } as const;
 

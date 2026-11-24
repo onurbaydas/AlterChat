@@ -116,6 +116,7 @@ sudo journalctl -u alterchat-bootstrap -f
 | `ALTERCHAT_BOOTSTRAP_PORT` | `4001` | TCP and UDP/QUIC port the node listens on |
 | `ALTERCHAT_DATA_DIR` | `./bootstrap-data` (`/var/lib/alterchat-bootstrap` with `install.sh`, `/data` in Docker) | Directory for the persistent node key |
 | `ALTERCHAT_LISTEN_IP` | `0.0.0.0` | IPv4 address to listen on |
+| `ALTERCHAT_EXTERNAL_ADDRS` | auto (`install.sh`) | comma-separated public multiaddrs of the node; required behind 1:1 NAT for the relay |
 | `ALTERCHAT_RELAY` | `1` | `0` disables the circuit relay service (NAT traversal for clients) |
 | `RUST_LOG` | `info` | Log verbosity |
 
