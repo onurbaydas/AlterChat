@@ -12,6 +12,7 @@ pub mod plugin;
 pub mod pow;
 pub mod push;
 pub mod sharding;
+pub mod socks5;
 pub mod spam;
 pub mod x3dh; // For Phase 5
 

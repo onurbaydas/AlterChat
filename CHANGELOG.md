@@ -79,6 +79,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SOCKS5 proxy transport (`alterchat-core/src/socks5.rs`). In SOCKS5 mode,
+  TCP multiaddrs (`/ip4`, `/ip6`, `/dns*`, `/onion3`) are dialed through the
+  configured proxy with remote DNS (host names are sent to the proxy, never
+  resolved locally) and optional `user:pass@host:port` authentication. The
+  mode is outbound only: no direct TCP, QUIC, listeners, mDNS, relay server,
+  or hole punching. Relay-client circuits still work on top of it. A missing,
+  invalid, or unreachable proxy fails session start with a clear error, and
+  there is no direct fallback.
+- Experimental I2P mode: the SOCKS5 transport pointed at the I2P router's SOCKS
+  proxy (default `127.0.0.1:4447`). It only dials `.i2p` host names; see the
+  README for its limitations.
+
 - Atomic database migration framework with versioned schema
   (`CURRENT_DB_VERSION = 1`)
 - Onboarding wizard with password-protected profile creation and backup warning

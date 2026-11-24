@@ -1,3 +1,4 @@
+use crate::socks5::{Socks5Config, Socks5Transport};
 use libp2p::StreamProtocol;
 use libp2p::core::Transport;
 use libp2p::identity::Keypair;
@@ -165,7 +166,7 @@ impl Default for NetworkPrivacyConfig {
 #[derive(NetworkBehaviour)]
 pub struct AlterChatBehaviour {
     pub gossipsub: gossipsub::Behaviour,
-    /// Disabled when `mdns_enabled` is false and always in Tor mode (mDNS
+    /// Disabled when `mdns_enabled` is false and always in Tor/SOCKS5/I2P mode (mDNS
     /// broadcasts presence on the local network).
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
@@ -187,13 +188,25 @@ pub async fn create_swarm(
 ) -> Result<Swarm<AlterChatBehaviour>, Box<dyn std::error::Error>> {
     let local_peer_id = PeerId::from(keypair.public());
 
-    // Fail closed: never silently fall back to direct connections when the
-    // user asked for an anonymising proxy that is not implemented yet.
-    if matches!(config.proxy_mode, ProxyMode::I2p | ProxyMode::Socks5) {
-        return Err("I2P / SOCKS5 proxy routing is not implemented yet; refusing to connect directly.                     Choose Direct or Tor in network settings."
-            .into());
+    // Fail closed: in SOCKS5 / I2P mode an invalid, missing or unreachable
+    // proxy is an error; we never fall back to direct connections.
+    let socks_config = match config.proxy_mode {
+        ProxyMode::Socks5 => Some(Socks5Config::socks5_from_setting(
+            config.proxy_addr.as_deref(),
+        )?),
+        ProxyMode::I2p => Some(Socks5Config::i2p_from_setting(
+            config.proxy_addr.as_deref(),
+        )?),
+        ProxyMode::Direct | ProxyMode::Tor => None,
+    };
+    if let Some(socks) = &socks_config {
+        crate::socks5::probe_proxy(socks, Duration::from_secs(10))
+            .await
+            .map_err(|e| format!("{e}; refusing to connect directly"))?;
     }
     let tor_mode = matches!(config.proxy_mode, ProxyMode::Tor);
+    // Any anonymising mode: no mDNS, no relay server, no public listeners.
+    let anonymised = tor_mode || socks_config.is_some();
 
     // Gossipsub configuration for message broadcast
     let message_id_fn = |message: &gossipsub::Message| {
@@ -220,12 +233,13 @@ pub async fn create_swarm(
     cfg.set_query_timeout(Duration::from_secs(5 * 60));
     let store = kad::store::MemoryStore::new(local_peer_id);
     let mut kademlia = kad::Behaviour::with_config(local_peer_id, store, cfg);
-    if config.dht_server_mode {
+    // Proxy modes are outbound-only, so advertising DHT server mode is useless.
+    if config.dht_server_mode && socks_config.is_none() {
         kademlia.set_mode(Some(kad::Mode::Server));
     }
 
     // mDNS configuration for local network discovery
-    let mdns = if config.mdns_enabled && !tor_mode {
+    let mdns = if config.mdns_enabled && !anonymised {
         Some(mdns::tokio::Behaviour::new(
             mdns::Config::default(),
             local_peer_id,
@@ -249,7 +263,7 @@ pub async fn create_swarm(
 
     // NAT traversal: relay sunucu (her node başkaları için relay yapabilir) + relay istemci + dcutr
     let relay_server = Toggle::from(
-        (config.relay_enabled && !tor_mode)
+        (config.relay_enabled && !anonymised)
             .then(|| relay::Behaviour::new(local_peer_id, relay::Config::default())),
     );
     let (relay_transport, relay_client) = relay::client::new(local_peer_id);
@@ -266,7 +280,34 @@ pub async fn create_swarm(
         dcutr,
     };
 
-    if tor_mode {
+    if let Some(socks) = socks_config {
+        // SOCKS5 / I2P: the only transports are the SOCKS5 dialer and relay
+        // circuits on top of it. No TCP listener, no QUIC, no DNS transport
+        // (host names are resolved by the proxy).
+        let socks_transport = Socks5Transport::new(socks);
+        let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
+            .with_tokio()
+            .with_other_transport(
+                |key| -> Result<_, Box<dyn std::error::Error + Send + Sync>> {
+                    Ok(socks_transport
+                        .upgrade(libp2p::core::upgrade::Version::V1Lazy)
+                        .authenticate(noise::Config::new(key)?)
+                        .multiplex(yamux::Config::default()))
+                },
+            )?
+            .with_other_transport(
+                |key| -> Result<_, Box<dyn std::error::Error + Send + Sync>> {
+                    Ok(relay_transport
+                        .upgrade(libp2p::core::upgrade::Version::V1Lazy)
+                        .authenticate(noise::Config::new(key)?)
+                        .multiplex(yamux::Config::default()))
+                },
+            )?
+            .with_behaviour(|_| behaviour)?
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .build();
+        Ok(swarm)
+    } else if tor_mode {
         let tor_transport = libp2p_community_tor::TorTransport::bootstrapped().await?;
 
         let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
@@ -371,6 +412,181 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_file(&path);
+    }
+
+    use crate::socks5::tests::spawn_mock_proxy;
+    use libp2p::futures::StreamExt;
+    use libp2p::swarm::SwarmEvent;
+    use libp2p::{Multiaddr, ping};
+
+    #[derive(NetworkBehaviour)]
+    struct PingIdentify {
+        ping: ping::Behaviour,
+        identify: identify::Behaviour,
+    }
+
+    fn ping_identify(key: &Keypair) -> PingIdentify {
+        PingIdentify {
+            ping: ping::Behaviour::new(
+                ping::Config::new().with_interval(Duration::from_millis(200)),
+            ),
+            identify: identify::Behaviour::new(identify::Config::new(
+                "/alterchat-test/1.0.0".into(),
+                key.public(),
+            )),
+        }
+    }
+
+    fn proxy_config(addr: Option<String>, mode: ProxyMode) -> NetworkPrivacyConfig {
+        NetworkPrivacyConfig {
+            proxy_mode: mode,
+            proxy_addr: addr,
+            mdns_enabled: true,
+            relay_enabled: true,
+            ..NetworkPrivacyConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn ping_and_identify_over_socks5_proxy() {
+        // Peer B: plain TCP listener on loopback.
+        let mut b = libp2p::SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )
+            .unwrap()
+            .with_behaviour(ping_identify)
+            .unwrap()
+            .build();
+        b.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let b_port = loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = b.select_next_some().await {
+                break address
+                    .iter()
+                    .find_map(|p| match p {
+                        libp2p::multiaddr::Protocol::Tcp(port) => Some(port),
+                        _ => None,
+                    })
+                    .unwrap();
+            }
+        };
+        let b_id = *b.local_peer_id();
+
+        // Peer A: SOCKS5 transport only, pointed at the mock proxy which maps
+        // an unresolvable host name to 127.0.0.1.
+        let (proxy, seen) = spawn_mock_proxy(None, &["peer-b.alterchat.invalid"]).await;
+        let socks =
+            Socks5Config::socks5_from_setting(Some(&proxy.to_string())).expect("valid proxy");
+        let mut a = libp2p::SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_other_transport(|key| {
+                Socks5Transport::new(socks)
+                    .upgrade(libp2p::core::upgrade::Version::V1Lazy)
+                    .authenticate(noise::Config::new(key).unwrap())
+                    .multiplex(yamux::Config::default())
+            })
+            .unwrap()
+            .with_behaviour(ping_identify)
+            .unwrap()
+            .build();
+        assert!(
+            a.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+                .is_err(),
+            "proxied swarm must not listen"
+        );
+        let target: Multiaddr = format!("/dns4/peer-b.alterchat.invalid/tcp/{b_port}/p2p/{b_id}")
+            .parse()
+            .unwrap();
+        a.dial(target).unwrap();
+
+        let (mut pinged, mut identified) = (false, false);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !(pinged && identified) {
+                tokio::select! {
+                    ev = a.select_next_some() => match ev {
+                        SwarmEvent::Behaviour(PingIdentifyEvent::Ping(ping::Event { peer, result: Ok(_), .. })) if peer == b_id => pinged = true,
+                        SwarmEvent::Behaviour(PingIdentifyEvent::Identify(identify::Event::Received { peer_id, .. })) if peer_id == b_id => identified = true,
+                        SwarmEvent::OutgoingConnectionError { error, .. } => panic!("dial failed: {error}"),
+                        _ => {}
+                    },
+                    _ = b.select_next_some() => {}
+                }
+            }
+        })
+        .await
+        .expect("ping + identify over the SOCKS5 proxy");
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].atyp, 0x03, "CONNECT must carry the host name");
+        assert_eq!(seen[0].host, "peer-b.alterchat.invalid");
+        assert_eq!(seen[0].port, b_port);
+    }
+
+    #[tokio::test]
+    async fn create_swarm_socks5_mode_is_outbound_only() {
+        let (proxy, _seen) = spawn_mock_proxy(None, &[]).await;
+        let mut swarm = create_swarm(
+            Keypair::generate_ed25519(),
+            proxy_config(Some(proxy.to_string()), ProxyMode::Socks5),
+        )
+        .await
+        .expect("swarm with reachable proxy");
+        assert!(!swarm.behaviour().mdns.is_enabled());
+        assert!(!swarm.behaviour().relay_server.is_enabled());
+        assert!(
+            swarm
+                .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+                .is_err()
+        );
+        assert!(
+            swarm
+                .listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap())
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn create_swarm_rejects_missing_invalid_or_down_proxy() {
+        let err = create_swarm(
+            Keypair::generate_ed25519(),
+            proxy_config(None, ProxyMode::Socks5),
+        )
+        .await
+        .err()
+        .expect("missing proxy must fail")
+        .to_string();
+        assert!(err.contains("requires a proxy address"), "{err}");
+
+        let err = create_swarm(
+            Keypair::generate_ed25519(),
+            proxy_config(Some("not a proxy".into()), ProxyMode::Socks5),
+        )
+        .await
+        .err()
+        .expect("invalid proxy must fail")
+        .to_string();
+        assert!(err.contains("refusing to connect directly"), "{err}");
+
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+        for mode in [ProxyMode::Socks5, ProxyMode::I2p] {
+            let err = create_swarm(
+                Keypair::generate_ed25519(),
+                proxy_config(Some(dead_addr.to_string()), mode),
+            )
+            .await
+            .err()
+            .expect("unreachable proxy must fail")
+            .to_string();
+            assert!(err.contains("unreachable"), "{err}");
+            assert!(err.contains("refusing to connect directly"), "{err}");
+        }
     }
 
     #[test]

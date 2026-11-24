@@ -962,8 +962,8 @@ function App() {
                   <select value={proxyMode} onChange={e => setProxyMode(e.target.value)}>
                     <option value="none">Direct</option>
                     <option value="tor">Tor via Arti</option>
-                    <option value="socks5" disabled>SOCKS5 (not yet supported)</option>
-                    <option value="i2p" disabled>I2P (not yet supported)</option>
+                    <option value="socks5">SOCKS5 proxy (outbound only)</option>
+                    <option value="i2p">I2P via router SOCKS proxy (.i2p peers only, experimental)</option>
                   </select>
                   <label>Transport preference</label>
                   <select value={transportPreference} onChange={e => setTransportPreference(e.target.value)}>
@@ -971,7 +971,16 @@ function App() {
                     <option value="quic">QUIC preferred</option>
                     <option value="tor">Tor preferred</option>
                   </select>
-                  {(proxyMode === 'socks5' || proxyMode === 'i2p') && <input placeholder={proxyMode === 'socks5' ? '127.0.0.1:9050' : '127.0.0.1:7656'} value={proxyAddr} onChange={e => setProxyAddr(e.target.value)} />}
+                  {(proxyMode === 'socks5' || proxyMode === 'i2p') && (
+                    <>
+                      <input placeholder={proxyMode === 'socks5' ? 'host:port or user:pass@host:port (e.g. 127.0.0.1:9050)' : '127.0.0.1:4447 (default)'} value={proxyAddr} onChange={e => setProxyAddr(e.target.value)} />
+                      <div className="settings-note">
+                        {proxyMode === 'socks5'
+                          ? 'All connections go through this proxy, which resolves host names. Required. If the proxy is unreachable the session will not start; there is no direct fallback. No listening, QUIC, mDNS, relay serving or hole punching.'
+                          : 'Uses the I2P router\'s SOCKS proxy. Only .i2p peer addresses (/dns/<name>.b32.i2p/tcp/<port>/p2p/<id>) are dialed; clearnet bootstrap nodes are unreachable and inbound connections are not supported.'}
+                      </div>
+                    </>
+                  )}
                   <label><input type="checkbox" checked={torEnabled} onChange={e => setTorEnabled(e.target.checked)} /> Tor transport on next session</label>
                   <label><input type="checkbox" checked={mdnsEnabled} onChange={e => setMdnsEnabled(e.target.checked)} /> Local mDNS discovery</label>
                   <label><input type="checkbox" checked={dhtServerMode} onChange={e => setDhtServerMode(e.target.checked)} /> Serve DHT records</label>
