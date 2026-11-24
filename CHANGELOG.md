@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Direct messages now use X3DH + ML-KEM-768 and the Double Ratchet
+  (breaking wire change).** Before this, sessions started from a static
+  X25519 DH, and prekey secrets were thrown away.
+  - Whoever sends first fetches the peer's prekey bundle (new
+    `GetPrekeyBundle` request, DHT record as fallback) and runs the handshake.
+  - Bundle signatures are verified against the Ed25519 key embedded in the
+    peer id, and the signatures now also cover the X3DH identity key and a
+    timestamp.
+  - Signed-prekey and ML-KEM decapsulation secrets are stored in the SQLCipher
+    DB (schema v3). The newest three are kept, with weekly rotation.
+  - Either side can send first. Simultaneous initiation is resolved by keeping
+    the lower peer id's session; the other side re-encrypts its pending
+    messages on it.
+  - Every DM stays in an encrypted outbox until the recipient acknowledges it.
+    If it never is, a `dm-delivery-failed` event fires after 7 days.
+  - The X3DH identity key is derived from the Ed25519 seed with HKDF (domain
+    separated) instead of reusing the seed as an X25519 scalar.
+  - Ratchet headers are now authenticated, and a forged message can no longer
+    desynchronise a session.
+  - Legacy static-DH `dr:` sessions are dropped by the migration.
+- **Offline mailbox rebuilt.** Mailbox entries are now Double Ratchet messages
+  (forward secrecy preserved), stored in one record per (recipient, sender),
+  signed with the sender's Ed25519 identity. They are accepted only from
+  non-blocked friends and deduplicated by message id in the DB. AlterChat DHT
+  server nodes reject forged overwrites and rollbacks of mailbox records.
+  Before this, records were encrypted to the static key, the sender id was
+  unauthenticated, dedup never matched, and anyone could overwrite the single
+  per-recipient record.
+- Onion-routed DMs were silently dropped at the final hop (only the legacy
+  `RatchetPrivateMessage` was handled). The final hop now dispatches
+  `X3dhDm` through the normal DM path. Routes use up to two randomly chosen
+  relay friends instead of one chosen by `timestamp % n`.
 - **Profile storage redesigned (breaking).** The SQLCipher key used to be a
   bare SHA-256 of the password, and profile filenames contained a prefix of
   that hash. That allowed an offline dictionary attack against the filename

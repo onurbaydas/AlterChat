@@ -1,10 +1,12 @@
 pub mod crdt;
 pub mod crypto;
+pub mod dm;
 pub mod double_ratchet;
 pub mod ffi; // For Phase 5
 pub mod file_transfer;
 pub mod governance;
 pub mod identity;
+pub mod mailbox;
 pub mod network;
 pub mod onion;
 pub mod pluggable;

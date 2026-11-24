@@ -3,6 +3,7 @@
 #![allow(deprecated)]
 
 pub mod db;
+pub mod dm_runtime;
 pub mod profile;
 #[macro_use]
 pub mod commands;
@@ -474,46 +475,6 @@ fn save_ratchet_state(
     }
 }
 
-/// Double Ratchet (Signal Protocol) state yükleme/oluşturma.
-/// Mevcut kayıt varsa yükler; yoksa statik DH ile başlatır (gerçek X3DH gelecek fazda).
-fn load_or_init_dr_state(
-    conn: &rusqlite::Connection,
-    peer_id: &str,
-    my_secret: &[u8; 32],
-    peer_pubkey: &[u8; 32],
-    is_initiator: bool,
-) -> alterchat_core::double_ratchet::DrState {
-    let key = format!("dr:{}", peer_id);
-    if let Ok(Some(blob)) = db::load_ratchet_state(conn, &key) {
-        if let Ok(state) = bincode::deserialize::<alterchat_core::double_ratchet::DrState>(&blob) {
-            return state;
-        }
-    }
-    // Henüz X3DH handshake yapılmadı — statik DH ile başlat
-    let sk = alterchat_core::crypto::derive_static_shared_secret(my_secret, peer_pubkey);
-    if is_initiator {
-        alterchat_core::double_ratchet::init_alice(sk, *peer_pubkey)
-    } else {
-        // Bob: kendi gönderim DH secret'ı olarak my_secret kullan
-        alterchat_core::double_ratchet::init_bob(
-            sk,
-            *my_secret,
-            alterchat_core::crypto::get_public_key(my_secret),
-        )
-    }
-}
-
-fn save_dr_state(
-    conn: &rusqlite::Connection,
-    peer_id: &str,
-    state: &alterchat_core::double_ratchet::DrState,
-) {
-    let key = format!("dr:{}", peer_id);
-    if let Ok(blob) = bincode::serialize(state) {
-        let _ = db::save_ratchet_state(conn, &key, &blob);
-    }
-}
-
 fn current_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -734,7 +695,11 @@ fn rejection_for_request(
         P2pRequest::RatchetPrivateMessage { .. } => {
             P2pResponse::RatchetPrivateMessageAck { success: false }
         }
-        P2pRequest::X3dhDm { .. } => P2pResponse::X3dhDmAck { success: false },
+        P2pRequest::X3dhDm { .. } => P2pResponse::X3dhDmAck {
+            success: false,
+            reset_session: false,
+        },
+        P2pRequest::GetPrekeyBundle => P2pResponse::PrekeyBundle { bundle: None },
         P2pRequest::CapabilityAnnouncement { .. } => P2pResponse::CapabilityAck { success: false },
         P2pRequest::OnionForward { .. } => P2pResponse::OnionAck { success: false },
         P2pRequest::PluginEvent { .. } => P2pResponse::PluginEventAck { success: false },
@@ -804,15 +769,18 @@ pub fn run() {
                 let mut pow_ban = alterchat_core::traffic::PowBanList::new();
                 const POW_BAN_THRESHOLD: u32 = 3;
                 let mut chaff_interval = tokio::time::interval(std::time::Duration::from_secs(60));
-                let mut x3dh_rotation_interval = tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 3600));
+                let mut x3dh_rotation_interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+                // X3DH + Double Ratchet DM sessions, outbox and DHT mailbox.
+                let mut dm_rt = dm_runtime::DmRuntime::new();
 
                 loop {
                     tokio::select! {
                         _ = dht_check_interval.tick() => {
+                            if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {
+                                let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
+                                dm_rt.on_tick(conn, s, &ctx);
+                            }
                             if let Some(ref mut s) = swarm {
-                                let my_mailbox_key = alterchat_core::crypto::get_dht_mailbox_key(&my_peer_id);
-                                s.behaviour_mut().kademlia.get_record(my_mailbox_key);
-
                                 let my_pubkey_key = alterchat_core::crypto::get_dht_pubkey_key(&my_peer_id);
                                 let pubkey_record = libp2p::kad::Record {
                                     key: my_pubkey_key,
@@ -825,20 +793,9 @@ pub fn run() {
                         }
                         _ = x3dh_rotation_interval.tick() => {
                             if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {
-                                let ed_bytes: [u8; 32] = *offline_secret_bytes;
-                                let (bundle, _) = alterchat_core::x3dh::generate_prekey_bundle(&offline_secret_bytes, &ed_bytes);
-                                if let Ok(bundle_json) = serde_json::to_string(&bundle) {
-                                    let _ = db::save_prekey_bundle(conn, &my_peer_id, &bundle_json);
-                                    let pkb_key = alterchat_core::crypto::get_dht_prekey_bundle_key(&my_peer_id);
-                                    let record = libp2p::kad::Record {
-                                        key: pkb_key,
-                                        value: bundle_json.into_bytes(),
-                                        publisher: None,
-                                        expires: None,
-                                    };
-                                    let _ = s.behaviour_mut().kademlia.put_record(record, libp2p::kad::Quorum::One);
-                                    println!("[AlterChat] X3DH pre-keys automatically rotated.");
-                                }
+                                // Rotates the signed prekey when it is older than a week
+                                // (secrets are persisted before the bundle is published).
+                                dm_rt.maybe_rotate(conn, s, false);
                             }
                         }
                         _ = chaff_interval.tick() => {
@@ -982,24 +939,9 @@ pub fn run() {
                                 let _ = new_swarm.behaviour_mut().kademlia.start_providing(record_key.clone());
                                 new_swarm.behaviour_mut().kademlia.get_providers(record_key);
 
-                                // X3DH PreKeyBundle DHT yayını: her oturumda taze signed prekey üretilip yayınlanır
-                                {
-                                    let ed_bytes: [u8; 32] = *offline_secret_bytes;
-                                    let (bundle, _ml_kem_dk_bytes) = alterchat_core::x3dh::generate_prekey_bundle(&offline_secret_bytes, &ed_bytes);
-                                    if let Ok(bundle_json) = serde_json::to_string(&bundle) {
-                                        if let Some(conn) = &conn_opt {
-                                            let _ = db::save_prekey_bundle(conn, &my_peer_id, &bundle_json);
-                                        }
-                                        let pkb_key = alterchat_core::crypto::get_dht_prekey_bundle_key(&my_peer_id);
-                                        let record = libp2p::kad::Record {
-                                            key: pkb_key,
-                                            value: bundle_json.into_bytes(),
-                                            publisher: None,
-                                            expires: None,
-                                        };
-                                        let _ = new_swarm.behaviour_mut().kademlia.put_record(record, libp2p::kad::Quorum::One);
-                                    }
-                                }
+                                // X3DH: load or rotate our signed prekey (secrets persisted in the
+                                // encrypted DB), publish the bundle, poll friends' DHT mailboxes.
+                                dm_rt.start(&conn, &mut new_swarm, &my_peer_id, &offline_secret_bytes);
 
                                 // Kendi offline pubkey'ini DHT mailbox'a yayınla
                                 {
@@ -1013,12 +955,6 @@ pub fn run() {
                                         expires: None,
                                     };
                                     let _ = new_swarm.behaviour_mut().kademlia.put_record(record, libp2p::kad::Quorum::One);
-                                }
-
-                                // Kendi DHT mailbox'ını oku (offline mesajlar)
-                                {
-                                    let mailbox_key = alterchat_core::crypto::get_dht_mailbox_key(&my_peer_id);
-                                    new_swarm.behaviour_mut().kademlia.get_record(mailbox_key);
                                 }
 
                                 match (&network_config.proxy_mode, &network_config.transport_preference) {
@@ -1243,7 +1179,7 @@ pub fn run() {
                                 }
                                 if let Some(conn) = &conn_opt {
                                     if let Some(s) = &mut swarm {
-                                        if let Ok(peer) = peer_id.parse::<PeerId>() {
+                                        if peer_id.parse::<PeerId>().is_ok() {
                                             let peer_settings = db::get_peer_settings(conn, &peer_id).ok();
                                             if peer_settings.as_ref().map(|p| p.blocked).unwrap_or(false) {
                                                 let _ = app_handle.emit("private-message-blocked", peer_id.clone());
@@ -1254,135 +1190,27 @@ pub fn run() {
                                                 continue;
                                             }
                                             let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-                                            let _ = db::save_private_message(conn, &peer_id, true, &text, timestamp, ttl);
-
-                                            let friends = db::get_friends(conn).unwrap_or_default();
-
-                                            if let Some(friend) = friends.iter().find(|f| f.peer_id == peer_id) {
-                                                if friend.blocked {
-                                                    let _ = app_handle.emit("private-message-blocked", peer_id.clone());
-                                                } else if let Some(pubkey_hex) = &friend.offline_pubkey {
-                                                    if let Some(pk) = decode_x25519_hex(pubkey_hex) {
-                                                        // Double Ratchet (Signal Protocol) — DH ratchet adımıyla forward secrecy
-                                                        let mut dr_state = load_or_init_dr_state(
-                                                            conn,
-                                                            &peer_id,
-                                                            &offline_secret_bytes,
-                                                            &pk,
-                                                            my_peer_id.as_str() < peer_id.as_str(),
-                                                        );
-                                                        if let Ok(dr_envelope) = alterchat_core::double_ratchet::encrypt(
-                                                            &mut dr_state,
-                                                            text.as_bytes(),
-                                                        ) {
-                                                            if let Ok(envelope_bytes) = bincode::serialize(&dr_envelope) {
-                                                                let req = alterchat_core::file_transfer::P2pRequest::X3dhDm {
-                                                                    init_msg: None,
-                                                                    dr_envelope: envelope_bytes,
-                                                                    sender_dh_pub: dr_state.dh_send_pub,
-                                                                    sender_nick: sender_nick.clone(),
-                                                                    timestamp,
-                                                                    ttl,
-                                                                };
-
-                                                                let mut sent_onion = false;
-                                                                if use_onion {
-                                                                    if let Ok(req_bytes) = bincode::serialize(&req) {
-                                                                        let possible_relays: Vec<_> = friends.iter().filter(|f| f.peer_id != peer_id && f.offline_pubkey.is_some() && !f.blocked).collect();
-                                                                        if !possible_relays.is_empty() {
-                                                                            let index = (timestamp as usize) % possible_relays.len();
-                                                                            let relay = possible_relays[index];
-                                                                            if let Some(relay_pk_hex) = &relay.offline_pubkey {
-                                                                                if let Some(relay_pk) = decode_x25519_hex(relay_pk_hex) {
-                                                                                    if let Ok(relay_peer_id) = relay.peer_id.parse::<libp2p::PeerId>() {
-                                                                                        if let Ok(sealed) = alterchat_core::crypto::sealed_send(
-                                                                                            &offline_secret_bytes,
-                                                                                            my_peer_id.clone(),
-                                                                                            &pk,
-                                                                                            &req_bytes
-                                                                                        ) {
-                                                                                            if let Ok(sealed_bytes) = bincode::serialize(&sealed) {
-                                                                                                let route = vec![
-                                                                                                    (relay.peer_id.clone(), relay_pk),
-                                                                                                    (peer_id.clone(), pk)
-                                                                                                ];
-                                                                                                if let Ok(onion_packet) = alterchat_core::onion::wrap_onion(&route, sealed_bytes) {
-                                                                                                    if let Ok(onion_bytes) = bincode::serialize(&onion_packet) {
-                                                                                                        s.behaviour_mut().request_response.send_request(
-                                                                                                            &relay_peer_id,
-                                                                                                            alterchat_core::file_transfer::P2pRequest::OnionForward { packet: onion_bytes }
-                                                                                                        );
-                                                                                                        sent_onion = true;
-                                                                                                    }
-                                                                                                }
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-
-                                                                if !sent_onion {
-                                                                    s.behaviour_mut().request_response.send_request(&peer, req);
-                                                                }
-                                                                save_dr_state(conn, &peer_id, &dr_state);
-                                                            }
-                                                        } else {
-                                                            // Şifreleme başarısız — güvenlik gereği cleartext gönderilmez
-                                                            let _ = app_handle.emit("dm-requires-pubkey", peer_id.clone());
-                                                        }
-
-                                                        #[derive(serde::Serialize, serde::Deserialize)]
-                                                        struct OfflineMsg {
-                                                            sender_peer_id: String,
-                                                            sender_nick: String,
-                                                            text: String,
-                                                            timestamp: i64,
-                                                            ttl: Option<i64>,
-                                                            // Replay koruması: her mesajın benzersiz nonce'u var
-                                                            nonce: [u8; 16],
-                                                        }
-                                                        // Replay koruması için 16-byte nonce: timestamp + random bytes
-                                                        let mut nonce_bytes = [0u8; 16];
-                                                        let ts_bytes = timestamp.to_le_bytes();
-                                                        nonce_bytes[..8].copy_from_slice(&ts_bytes);
-                                                        // Kalan 8 byte'ı rastgele doldur (std ile)
-                                                        {
-                                                            use std::collections::hash_map::DefaultHasher;
-                                                            use std::hash::{Hash, Hasher};
-                                                            let mut h = DefaultHasher::new();
-                                                            timestamp.hash(&mut h);
-                                                            std::thread::current().id().hash(&mut h);
-                                                            let hash = h.finish().to_le_bytes();
-                                                            nonce_bytes[8..].copy_from_slice(&hash);
-                                                        }
-                                                        let msg = OfflineMsg { sender_peer_id: my_peer_id.clone(), sender_nick, text, timestamp, ttl, nonce: nonce_bytes };
-                                                        let plaintext = bincode::serialize(&msg).unwrap();
-
-                                                        if let Ok(encrypted) = alterchat_core::crypto::encrypt_for_peer(&pk, &plaintext) {
-                                                            // Nonce payload içinde — alıcı DB'deki seen_nonces ile replay'i reddeder
-                                                            let mailbox_key = alterchat_core::crypto::get_dht_mailbox_key(&peer_id);
-                                                            let record = libp2p::kad::Record {
-                                                                key: mailbox_key,
-                                                                value: bincode::serialize(&encrypted).unwrap(),
-                                                                publisher: None,
-                                                                expires: Some(std::time::Instant::now() + std::time::Duration::from_secs(7 * 24 * 60 * 60)),
-                                                            };
-                                                            let _ = s.behaviour_mut().kademlia.put_record(record, libp2p::kad::Quorum::One);
-                                                        }
-                                                    } else {
-                                                        // Geçersiz pubkey hex — cleartext gönderilmez
-                                                        let _ = app_handle.emit("dm-requires-pubkey", peer_id.clone());
-                                                    }
-                                                } else {
-                                                    // Arkadaşın pubkey'i yok — cleartext gönderilmez
-                                                    let _ = app_handle.emit("dm-requires-pubkey", peer_id.clone());
-                                                }
-                                            } else {
-                                                // Arkadaş listesinde değil — cleartext gönderilmez
+                                            let friend_ok = db::get_friends(conn)
+                                                .unwrap_or_default()
+                                                .iter()
+                                                .any(|f| f.peer_id == peer_id && !f.blocked);
+                                            if !friend_ok || alterchat_core::dm::ed25519_public_from_peer_id(&peer_id).is_none() {
+                                                // Not a (non-blocked) friend or not an Ed25519 peer id: no session possible.
                                                 let _ = app_handle.emit("dm-requires-pubkey", peer_id.clone());
+                                                continue;
+                                            }
+                                            let plaintext = alterchat_core::dm::DmPlaintext {
+                                                sender_nick,
+                                                text: text.clone(),
+                                                timestamp,
+                                                ttl,
+                                                control: false,
+                                            };
+                                            // Queued in the encrypted outbox first; delivered directly, via
+                                            // onion relays or the signed DHT mailbox (see dm_runtime.rs).
+                                            let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
+                                            if dm_rt.send(conn, s, &ctx, &peer_id, plaintext, use_onion) {
+                                                let _ = db::save_private_message(conn, &peer_id, true, &text, timestamp, ttl);
                                             }
                                         }
                                     }
@@ -1679,58 +1507,31 @@ pub fn run() {
                                                         alterchat_core::file_transfer::P2pResponse::RatchetPrivateMessageAck { success }
                                                     );
                                                 }
-                                                alterchat_core::file_transfer::P2pRequest::X3dhDm { dr_envelope, sender_dh_pub, sender_nick, timestamp, ttl, .. } => {
-                                                    let mut success = false;
-                                                    if let Some(conn) = &conn_opt {
-                                                        let peer_id = peer.to_string();
-                                                        let friends = db::get_friends(conn).unwrap_or_default();
-                                                        if let Some(friend) = friends.iter().find(|f| f.peer_id == peer_id && !f.blocked) {
-                                                            if let Some(pubkey_hex) = &friend.offline_pubkey {
-                                                                if let Some(pk) = decode_x25519_hex(pubkey_hex) {
-                                                                    // Bob: gönderenin DH public key'i header'dan alınır
-                                                                    let _ = sender_dh_pub; // DrEnvelope header'da taşıyor
-                                                                    if let Ok(dr_envelope) = bincode::deserialize::<alterchat_core::double_ratchet::DrEnvelope>(&dr_envelope) {
-                                                                        let mut dr_state = load_or_init_dr_state(
-                                                                            conn,
-                                                                            &peer_id,
-                                                                            &offline_secret_bytes,
-                                                                            &pk,
-                                                                            // Same deterministic rule as the send path: the lower
-                                                                            // peer id is Alice (initiator), the higher one is Bob.
-                                                                            my_peer_id.as_str() < peer_id.as_str(),
-                                                                        );
-                                                                        if let Ok(plaintext) = alterchat_core::double_ratchet::decrypt(&mut dr_state, &dr_envelope) {
-                                                                            if let Ok(text) = String::from_utf8(plaintext) {
-                                                                                let _ = db::save_private_message(conn, &peer_id, false, &text, timestamp, ttl);
-                                                                                save_dr_state(conn, &peer_id, &dr_state);
-
-                                                                                #[derive(serde::Serialize, Clone)]
-                                                                                struct PmPayload {
-                                                                                    peer_id: String,
-                                                                                    sender_nick: String,
-                                                                                    text: String,
-                                                                                    timestamp: i64,
-                                                                                    ttl: Option<i64>,
-                                                                                }
-                                                                                let _ = app_handle.emit("new-private-message", PmPayload {
-                                                                                    peer_id,
-                                                                                    sender_nick,
-                                                                                    text,
-                                                                                    timestamp,
-                                                                                    ttl,
-                                                                                });
-                                                                                success = true;
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
+                                                alterchat_core::file_transfer::P2pRequest::X3dhDm { message } => {
+                                                    let peer_str = peer.to_string();
+                                                    match &conn_opt {
+                                                        Some(conn) => {
+                                                            let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
+                                                            let processed = dm_rt.on_dm_request(conn, &ctx, &peer_str, &message);
+                                                            let _ = s.behaviour_mut().request_response.send_response(channel, processed.response());
+                                                            if processed.flush {
+                                                                dm_rt.flush_peer(conn, s, &ctx, &peer_str, false);
                                                             }
                                                         }
+                                                        None => {
+                                                            let _ = s.behaviour_mut().request_response.send_response(
+                                                                channel,
+                                                                alterchat_core::file_transfer::P2pResponse::X3dhDmAck { success: false, reset_session: false },
+                                                            );
+                                                        }
                                                     }
-                                                    let _ = s.behaviour_mut().request_response.send_response(
-                                                        channel,
-                                                        alterchat_core::file_transfer::P2pResponse::X3dhDmAck { success }
-                                                    );
+                                                }
+                                                alterchat_core::file_transfer::P2pRequest::GetPrekeyBundle => {
+                                                    let response = match &conn_opt {
+                                                        Some(conn) => dm_rt.bundle_response(conn),
+                                                        None => alterchat_core::file_transfer::P2pResponse::PrekeyBundle { bundle: None },
+                                                    };
+                                                    let _ = s.behaviour_mut().request_response.send_response(channel, response);
                                                 }
                                                 alterchat_core::file_transfer::P2pRequest::CapabilityAnnouncement { peer_id, storage_node, relay_node, dht_server, media_relay, capacity_score, protocol_versions } => {
                                                     #[derive(serde::Serialize, Clone)]
@@ -1770,11 +1571,16 @@ pub fn run() {
                                                                     }
                                                                 }
                                                             } else if let Some(payload) = layer.payload {
-                                                                // It's for us!
-                                                                if let Ok(sealed_msg) = bincode::deserialize::<alterchat_core::crypto::SealedMessage>(&payload) {
-                                                                    if let Ok((sender_pubkey, sender_peer_id, inner_bytes)) = alterchat_core::crypto::sealed_receive(&offline_secret_bytes, &sealed_msg) {
-                                                                        if let Ok(req) = bincode::deserialize::<alterchat_core::file_transfer::P2pRequest>(&inner_bytes) {
-                                                                            if let (alterchat_core::file_transfer::P2pRequest::RatchetPrivateMessage { envelope, sender_nick, timestamp, ttl }, Some(conn)) = (req, &conn_opt) {
+                                                                // It's for us! Bounded decoding of the sealed request.
+                                                                if let Ok((sender_pubkey, sender_peer_id, req)) = alterchat_core::onion::open_sealed_request(&offline_secret_bytes, &payload) {
+                                                                    {
+                                                                        {
+                                                                            if let (alterchat_core::file_transfer::P2pRequest::X3dhDm { message }, Some(conn)) = (&req, &conn_opt) {
+                                                                                // Same DM path as a direct X3dhDm; the sealed-sender key
+                                                                                // must equal the claimed friend's stored offline key.
+                                                                                let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
+                                                                                dm_runtime::onion_final_hop(&mut dm_rt, conn, s, &ctx, sender_pubkey, &sender_peer_id, message);
+                                                                            } else if let (alterchat_core::file_transfer::P2pRequest::RatchetPrivateMessage { envelope, sender_nick, timestamp, ttl }, Some(conn)) = (req, &conn_opt) {
                                                                                 {
                                                                                     let peer_id = sender_peer_id;
                                                                                     let friends = db::get_friends(conn).unwrap_or_default();
@@ -1833,7 +1639,12 @@ pub fn run() {
                                             }
                                         }
                                     }
-                                    libp2p::request_response::Message::Response { .. } => {}
+                                    libp2p::request_response::Message::Response { request_id, response } => {
+                                        if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {
+                                            let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
+                                            dm_rt.on_response(conn, s, &ctx, request_id, response);
+                                        }
+                                    }
                                 }
                             }
                             SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
@@ -1872,59 +1683,32 @@ pub fn run() {
                                 }
                             }
                             SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Kademlia(libp2p::kad::Event::OutboundQueryProgressed {
+                                id,
                                 result: libp2p::kad::QueryResult::GetRecord(Ok(libp2p::kad::GetRecordOk::FoundRecord(peer_record))),
                                 ..
                             })) => {
-                                let my_mailbox_key = alterchat_core::crypto::get_dht_mailbox_key(&my_peer_id);
-                                if peer_record.record.key == my_mailbox_key {
-                                    if let Ok(encrypted) = bincode::deserialize::<alterchat_core::crypto::EncryptedPayload>(&peer_record.record.value) {
-                                        if let Ok(plaintext) = alterchat_core::crypto::decrypt_for_me(&offline_secret_bytes, &encrypted) {
-                                            #[derive(serde::Serialize, serde::Deserialize)]
-                                            struct OfflineMsg {
-                                                sender_peer_id: String,
-                                                sender_nick: String,
-                                                text: String,
-                                                timestamp: i64,
-                                                ttl: Option<i64>,
-                                                // Replay koruması nonce alanı (yeni format)
-                                                #[serde(default)]
-                                                nonce: [u8; 16],
-                                            }
-                                            if let Ok(msg) = bincode::deserialize::<OfflineMsg>(&plaintext) {
-                                                if let Some(conn) = &conn_opt {
-                                                    // Nonce varsa nonce ile, yoksa timestamp+text ile tekrar kontrolü
-                                                    let nonce_hex = hex::encode(msg.nonce);
-                                                    let existing = db::get_private_messages(conn, &msg.sender_peer_id).unwrap_or_default();
-                                                    let exists = if msg.nonce != [0u8; 16] {
-                                                        // Yeni format: nonce ile dedup
-                                                        existing.iter().any(|m| m.timestamp == msg.timestamp && m.text.starts_with(&nonce_hex[..8]))
-                                                    } else {
-                                                        // Eski format: timestamp+text ile dedup
-                                                        existing.iter().any(|m| m.timestamp == msg.timestamp && m.text == msg.text)
-                                                    };
-                                                    if !exists {
-                                                        let _ = db::save_private_message(conn, &msg.sender_peer_id, false, &msg.text, msg.timestamp, msg.ttl);
-
-                                                        #[derive(serde::Serialize, Clone)]
-                                                        struct PmPayload {
-                                                            peer_id: String,
-                                                            sender_nick: String,
-                                                            text: String,
-                                                            timestamp: i64,
-                                                            ttl: Option<i64>,
-                                                        }
-                                                        let _ = app_handle.emit("new-private-message", PmPayload {
-                                                            peer_id: msg.sender_peer_id,
-                                                            sender_nick: msg.sender_nick,
-                                                            text: msg.text,
-                                                            timestamp: msg.timestamp,
-                                                            ttl: msg.ttl,
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                // Prekey bundles and signed (recipient, sender) mailbox records;
+                                // everything is verified before use (see dm_runtime.rs).
+                                if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {
+                                    let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
+                                    dm_rt.on_record(conn, s, &ctx, id, &peer_record.record);
+                                }
+                            }
+                            SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Kademlia(libp2p::kad::Event::InboundRequest { request })) => {
+                                // Record filtering is enabled: validate mailbox records before storing.
+                                if let Some(s) = &mut swarm {
+                                    alterchat_core::mailbox::store_filtered_inbound(&mut s.behaviour_mut().kademlia, request, current_millis() as u64);
+                                }
+                            }
+                            SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::RequestResponse(libp2p::request_response::Event::OutboundFailure { request_id, .. })) => {
+                                if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {
+                                    dm_rt.on_outbound_failure(conn, s, request_id);
+                                }
+                            }
+                            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                                if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {
+                                    let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
+                                    dm_rt.on_connected(conn, s, &ctx, &peer_id);
                                 }
                             }
                             _ => {}

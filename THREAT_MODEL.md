@@ -120,19 +120,46 @@ Residual risk:
 
 ### Direct Message Encryption
 
-The repository contains:
+The canonical DM protocol (`alterchat-core/src/dm.rs`) is X3DH extended with
+ML-KEM-768, followed by the Double Ratchet:
 
-- X25519 encrypt/decrypt helpers
-- sealed-sender style envelopes
-- symmetric ratchet state
-- full Double Ratchet module
-- X3DH + ML-KEM-768 shared secret path
+- Prekey bundles are signed with the Ed25519 key embedded in the peer id. The
+  signatures cover the X3DH identity key, the signed prekey, its timestamp and
+  the ML-KEM encapsulation key. Initiators reject bundles that fail
+  verification or are older than 30 days.
+- The X3DH X25519 identity key is derived from the Ed25519 seed with HKDF and
+  a dedicated label. The initial message carries an Ed25519 signature over it,
+  so the responder binds it to the sender's peer id. The older "offline"
+  X25519 key (the raw Ed25519 seed, used only for sealed sender and onion
+  layers) is unchanged for compatibility with stored friend keys.
+- Whoever sends first initiates. If both sides initiate at once, the session
+  started by the lower peer id wins, and the other side re-encrypts its pending
+  messages on it. Messages stay in an encrypted outbox until the recipient
+  acknowledges them.
+- Ratchet headers, both identity keys, the session id and the message id are
+  bound as AEAD associated data. Decryption commits state only on success.
+- Signed prekeys rotate weekly, and the newest three are kept. One-time
+  prekeys are not used, so a handshake against a still-valid signed prekey has
+  no one-time-key replay protection beyond the consumed-session list.
+- Legacy static-DH Double Ratchet sessions were dropped (schema v3). The
+  deprecated `RatchetPrivateMessage` receive path still exists for old peers.
+
+Offline delivery uses a DHT mailbox (`alterchat-core/src/mailbox.rs`). There
+is one record per (recipient, sender), holding Double Ratchet messages from the
+same session, signed by the sender. Recipients accept it only from non-blocked
+friends and deduplicate by message id. AlterChat clients in DHT server mode
+refuse forged overwrites and rollbacks. Bootstrap nodes and non-AlterChat DHT
+nodes do not filter records, so an attacker can still delete (overwrite)
+mailbox records stored there, though not forge them. Mailbox records reveal
+who writes to whom (the key is a hash of both peer ids) to anyone who can
+enumerate pairs.
 
 Residual risk:
 
-- multiple DM paths exist; canonical protocol selection is still needed
-- state migration and versioning are not complete
-- X3DH lifecycle and one-time prekey consumption need deeper integration
+- no one-time prekeys; signed-prekey compromise exposes handshakes made
+  against it until rotation, though ML-KEM and the ratchet limit the damage
+- the onion path has no end-to-end acknowledgement: a message is treated as
+  sent once the first relay accepts it
 - all cryptographic protocol code requires external audit
 
 ### Room State Integrity
@@ -187,6 +214,15 @@ Residual risk:
 - random send delays
 - obfs4-style obfuscation helpers
 - snowflake-style framing helpers
+
+Onion-routed DMs pick up to two relays uniformly at random from the user's
+friends that have a stored offline key, then the recipient (a 2- or 3-layer
+onion). With a single eligible relay friend the route has one relay hop. That
+relay learns both the sender (network peer) and the recipient (next hop), so
+one hop hides the sender only from observers of the recipient's network
+connection, not from the relay. With two relays neither relay sees both ends,
+but relays are friends, not an independent mix network, and colluding or
+observed relays can still link traffic.
 
 Residual risk:
 

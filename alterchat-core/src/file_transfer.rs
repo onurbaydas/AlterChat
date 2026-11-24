@@ -31,18 +31,15 @@ pub enum P2pRequest {
         timestamp: i64,
         ttl: Option<i64>,
     },
-    /// X3DH el sıkışması + Double Ratchet ile şifreli DM.
-    /// İlk mesajda init_msg Some, sonrakilerde None.
+    /// X3DH + ML-KEM handshake and Double Ratchet encrypted DM.
+    /// `message` is an encoded [`crate::dm::DmMessage`]; it carries the X3DH
+    /// initial message until the initiator's session is confirmed. Nick,
+    /// timestamp and TTL are inside the ciphertext.
     X3dhDm {
-        /// X3DH InitialMessage (bincode serialize edilmiş), sadece ilk mesajda
-        init_msg: Option<Vec<u8>>,
-        /// Double Ratchet DrEnvelope (bincode serialize edilmiş)
-        dr_envelope: Vec<u8>,
-        sender_dh_pub: [u8; 32],
-        sender_nick: String,
-        timestamp: i64,
-        ttl: Option<i64>,
+        message: Vec<u8>,
     },
+    /// Asks the peer for its current signed prekey bundle.
+    GetPrekeyBundle,
     CapabilityAnnouncement {
         peer_id: String,
         storage_node: bool,
@@ -92,6 +89,14 @@ pub enum P2pResponse {
     },
     X3dhDmAck {
         success: bool,
+        /// The receiver does not know the session the message was sent on;
+        /// the sender should discard it and start a new handshake.
+        #[serde(default)]
+        reset_session: bool,
+    },
+    /// JSON-encoded [`crate::x3dh::PreKeyBundle`], `None` if refused.
+    PrekeyBundle {
+        bundle: Option<Vec<u8>>,
     },
     CapabilityAck {
         success: bool,

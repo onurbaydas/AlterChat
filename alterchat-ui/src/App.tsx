@@ -359,7 +359,10 @@ function App() {
       alert(`Could not open room "${e.payload}": wrong room password?`);
     });
     const unlistenDmNeedsKey = listen<string>("dm-requires-pubkey", (e) => {
-      alert(`Message to ${e.payload.substring(0, 8)}… was not sent: an encrypted session is not available yet (missing public key, or the peer must message you first).`);
+      alert(`Message to ${e.payload.substring(0, 8)}… was not sent: direct messages are only possible to friends with a valid peer id.`);
+    });
+    const unlistenDmFailed = listen<{ peer_id: string; reason: string }>("dm-delivery-failed", (e) => {
+      alert(`Message to ${e.payload.peer_id.substring(0, 8)}… could not be delivered: ${e.payload.reason}.`);
     });
     const unlistenDmBlocked = listen<string>("private-message-blocked", (e) => {
       alert(`Message to ${e.payload.substring(0, 8)}… blocked by your trust settings.`);
@@ -369,6 +372,7 @@ function App() {
       unlistenSessionError.then(f => f());
       unlistenRoomJoinFailed.then(f => f());
       unlistenDmNeedsKey.then(f => f());
+      unlistenDmFailed.then(f => f());
       unlistenDmBlocked.then(f => f());
       unlistenMessage.then(f => f());
       unlistenHistory.then(f => f());

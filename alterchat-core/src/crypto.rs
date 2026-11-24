@@ -83,13 +83,8 @@ pub fn get_public_key(secret_bytes: &[u8; 32]) -> [u8; 32] {
 use libp2p::kad::RecordKey;
 use sha2::{Digest, Sha256};
 
-pub fn get_dht_mailbox_key(peer_id_str: &str) -> RecordKey {
-    let mut hasher = Sha256::new();
-    hasher.update(peer_id_str.as_bytes());
-    hasher.update(b"_offline_inbox");
-    let result = hasher.finalize();
-    RecordKey::new(&result.as_slice())
-}
+// The single-record-per-recipient offline inbox (`get_dht_mailbox_key`) was
+// removed: see `crate::mailbox` for the signed per-(recipient, sender) mailbox.
 
 pub fn get_dht_pubkey_key(peer_id_str: &str) -> RecordKey {
     let mut hasher = Sha256::new();

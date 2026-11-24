@@ -50,7 +50,33 @@ pub fn wrap_onion(
 
 pub fn peel_onion(my_secret: &[u8; 32], packet: &OnionPacket) -> Result<OnionLayer, &'static str> {
     let bytes = decrypt_for_me(my_secret, &packet.layer)?;
-    bincode::deserialize(&bytes).map_err(|_| "onion deserialize failed")
+    crate::dm::decode_bounded(&bytes, MAX_ONION_BYTES).ok_or("onion deserialize failed")
+}
+
+/// Upper bound for a decoded onion layer / sealed payload (network input).
+pub const MAX_ONION_BYTES: u64 = 256 * 1024;
+
+/// Picks up to `max` distinct relays uniformly at random.
+pub fn pick_relays<T: Clone>(candidates: &[T], max: usize) -> Vec<T> {
+    use rand::seq::SliceRandom;
+    let mut v = candidates.to_vec();
+    v.shuffle(&mut rand::rng());
+    v.truncate(max);
+    v
+}
+
+/// Final hop: opens a sealed-sender payload and decodes the inner request.
+/// Returns `(sender_x25519_pubkey, claimed_sender_peer_id, request)`; the
+/// caller must check the pubkey against the claimed sender's stored key.
+pub fn open_sealed_request(
+    my_secret: &[u8; 32],
+    payload: &[u8],
+) -> Result<([u8; 32], String, crate::file_transfer::P2pRequest), &'static str> {
+    let sealed: crate::crypto::SealedMessage =
+        crate::dm::decode_bounded(payload, MAX_ONION_BYTES).ok_or("sealed decode failed")?;
+    let (pubkey, sender, inner) = crate::crypto::sealed_receive(my_secret, &sealed)?;
+    let req = crate::dm::decode_bounded(&inner, MAX_ONION_BYTES).ok_or("inner decode failed")?;
+    Ok((pubkey, sender, req))
 }
 
 #[cfg(test)]

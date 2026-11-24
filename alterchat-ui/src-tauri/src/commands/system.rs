@@ -39,9 +39,9 @@ pub struct CryptoCapabilities {
 pub async fn get_crypto_capabilities() -> Result<CryptoCapabilities, String> {
     Ok(CryptoCapabilities {
         double_ratchet: true,
-        // Prekey bundles are generated but the X3DH handshake is not yet
-        // used for session setup (sessions start from static X25519 DH).
-        x3dh_mlkem: false,
+        // DM sessions start with X3DH + ML-KEM-768 against a signed prekey
+        // bundle, then run the Double Ratchet (see dm_runtime.rs).
+        x3dh_mlkem: true,
         sealed_sender: true,
         onion_routing: true,
         pow_antispam: true,

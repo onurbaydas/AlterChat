@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, Result};
 
-const CURRENT_DB_VERSION: u32 = 2;
+const CURRENT_DB_VERSION: u32 = 3;
 
 pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -183,10 +183,15 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             )?;
             // Fall through to apply subsequent migrations.
             migrate_v1_to_v2(conn)?;
+            migrate_v2_to_v3(conn)?;
         }
         1 => {
-            // Database is at V1 — apply V2 migration.
+            // Database is at V1 — apply V2 and V3 migrations.
             migrate_v1_to_v2(conn)?;
+            migrate_v2_to_v3(conn)?;
+        }
+        2 => {
+            migrate_v2_to_v3(conn)?;
         }
         v if v == CURRENT_DB_VERSION => {
             // Already up to date — nothing to do.
@@ -225,6 +230,329 @@ fn migrate_v1_to_v2(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
         COMMIT;
     ",
+    )?;
+    Ok(())
+}
+
+/// Applies the V2 → V3 schema migration (idempotent).
+///
+/// V3 adds X3DH + ML-KEM direct-message state: our signed prekeys (secrets
+/// included; the database is SQLCipher-encrypted), per-peer DM sessions,
+/// consumed handshake ids, received message ids (dedup) and the outgoing
+/// DM outbox. Legacy static-DH Double Ratchet sessions (`dr:` rows) are
+/// dropped: they cannot interoperate with the new handshake.
+fn migrate_v2_to_v3(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        BEGIN;
+
+        CREATE TABLE IF NOT EXISTS x3dh_signed_prekeys (
+            spk_pub     BLOB PRIMARY KEY,
+            spk_secret  BLOB NOT NULL,
+            ml_kem_seed BLOB NOT NULL,
+            bundle_json TEXT NOT NULL,
+            created_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS dm_sessions (
+            peer_id      TEXT PRIMARY KEY,
+            session_blob BLOB NOT NULL,
+            updated_at   INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS dm_seen_sessions (
+            peer_id    TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            seen_at    INTEGER NOT NULL,
+            PRIMARY KEY (peer_id, session_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS dm_received_ids (
+            peer_id     TEXT NOT NULL,
+            msg_id      TEXT NOT NULL,
+            received_at INTEGER NOT NULL,
+            PRIMARY KEY (peer_id, msg_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS dm_outbox (
+            msg_id       TEXT PRIMARY KEY,
+            peer_id      TEXT NOT NULL,
+            payload      BLOB NOT NULL,
+            wire         BLOB,
+            session_id   TEXT,
+            use_onion    BOOLEAN NOT NULL DEFAULT 0,
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            mailboxed    BOOLEAN NOT NULL DEFAULT 0,
+            created_at   INTEGER NOT NULL,
+            last_attempt INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS dm_outbox_peer ON dm_outbox (peer_id, created_at);
+
+        DELETE FROM ratchet_states WHERE peer_id LIKE 'dr:%';
+
+        PRAGMA user_version = 3;
+
+        COMMIT;
+    ",
+    )?;
+    Ok(())
+}
+
+// ─── X3DH signed prekeys (our own) ────────────────────────────────────────────
+
+pub fn save_signed_prekey(
+    conn: &Connection,
+    spk_pub: &[u8; 32],
+    spk_secret: &[u8; 32],
+    ml_kem_seed: &[u8; 64],
+    bundle_json: &str,
+    created_at: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO x3dh_signed_prekeys (spk_pub, spk_secret, ml_kem_seed, bundle_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![&spk_pub[..], &spk_secret[..], &ml_kem_seed[..], bundle_json, created_at],
+    )?;
+    Ok(())
+}
+
+/// Returns `(spk_secret, ml_kem_seed)` for one of our signed prekeys.
+pub fn load_signed_prekey(
+    conn: &Connection,
+    spk_pub: &[u8; 32],
+) -> Result<Option<([u8; 32], [u8; 64])>> {
+    let mut stmt =
+        conn.prepare("SELECT spk_secret, ml_kem_seed FROM x3dh_signed_prekeys WHERE spk_pub = ?1")?;
+    let mut rows = stmt.query(params![&spk_pub[..]])?;
+    if let Some(row) = rows.next()? {
+        let secret: Vec<u8> = row.get(0)?;
+        let seed: Vec<u8> = row.get(1)?;
+        if let (Ok(secret), Ok(seed)) = (
+            <[u8; 32]>::try_from(secret.as_slice()),
+            <[u8; 64]>::try_from(seed.as_slice()),
+        ) {
+            return Ok(Some((secret, seed)));
+        }
+    }
+    Ok(None)
+}
+
+/// Our newest signed prekey bundle: `(bundle_json, created_at)`.
+pub fn latest_signed_prekey(conn: &Connection) -> Result<Option<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT bundle_json, created_at FROM x3dh_signed_prekeys ORDER BY created_at DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some((row.get(0)?, row.get(1)?)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Keeps the `keep` newest signed prekeys (older ones stay usable for
+/// in-flight handshakes until pruned here).
+pub fn prune_signed_prekeys(conn: &Connection, keep: usize) -> Result<()> {
+    conn.execute(
+        "DELETE FROM x3dh_signed_prekeys WHERE spk_pub NOT IN (
+            SELECT spk_pub FROM x3dh_signed_prekeys ORDER BY created_at DESC LIMIT ?1
+        )",
+        params![keep as i64],
+    )?;
+    Ok(())
+}
+
+// ─── DM sessions ──────────────────────────────────────────────────────────────
+
+pub fn load_dm_session(conn: &Connection, peer_id: &str) -> Result<Option<Vec<u8>>> {
+    let mut stmt = conn.prepare("SELECT session_blob FROM dm_sessions WHERE peer_id = ?1")?;
+    let mut rows = stmt.query(params![peer_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get(0)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn save_dm_session(conn: &Connection, peer_id: &str, blob: &[u8]) -> Result<()> {
+    conn.execute(
+        "INSERT INTO dm_sessions (peer_id, session_blob, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(peer_id) DO UPDATE SET session_blob=excluded.session_blob, updated_at=excluded.updated_at",
+        params![peer_id, blob, now_ms()],
+    )?;
+    Ok(())
+}
+
+pub fn delete_dm_session(conn: &Connection, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM dm_sessions WHERE peer_id = ?1",
+        params![peer_id],
+    )?;
+    Ok(())
+}
+
+pub fn mark_dm_session_seen(conn: &Connection, peer_id: &str, session_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO dm_seen_sessions (peer_id, session_id, seen_at) VALUES (?1, ?2, ?3)",
+        params![peer_id, session_id, now_ms()],
+    )?;
+    Ok(())
+}
+
+pub fn is_dm_session_seen(conn: &Connection, peer_id: &str, session_id: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM dm_seen_sessions WHERE peer_id = ?1 AND session_id = ?2",
+        params![peer_id, session_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Records a received DM id; returns `false` if it was already recorded.
+pub fn record_dm_received(conn: &Connection, peer_id: &str, msg_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO dm_received_ids (peer_id, msg_id, received_at) VALUES (?1, ?2, ?3)",
+        params![peer_id, msg_id, now_ms()],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn is_dm_received(conn: &Connection, peer_id: &str, msg_id: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM dm_received_ids WHERE peer_id = ?1 AND msg_id = ?2",
+        params![peer_id, msg_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Drops dedup ids older than `max_age_ms` (mailbox records expire first).
+pub fn prune_dm_received(conn: &Connection, max_age_ms: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM dm_received_ids WHERE received_at < ?1",
+        params![now_ms() - max_age_ms],
+    )?;
+    Ok(())
+}
+
+// ─── DM outbox ────────────────────────────────────────────────────────────────
+
+pub struct DmOutboxEntry {
+    pub msg_id: String,
+    pub peer_id: String,
+    pub payload: Vec<u8>,
+    pub wire: Option<Vec<u8>>,
+    pub session_id: Option<String>,
+    pub use_onion: bool,
+    pub attempts: i64,
+    pub mailboxed: bool,
+    pub created_at: i64,
+    pub last_attempt: i64,
+}
+
+pub fn insert_dm_outbox(
+    conn: &Connection,
+    msg_id: &str,
+    peer_id: &str,
+    payload: &[u8],
+    use_onion: bool,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO dm_outbox (msg_id, peer_id, payload, use_onion, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![msg_id, peer_id, payload, use_onion, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// Pending entries for a peer, oldest first (bounded by `limit`).
+pub fn list_dm_outbox(
+    conn: &Connection,
+    peer_id: &str,
+    limit: usize,
+) -> Result<Vec<DmOutboxEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT msg_id, peer_id, payload, wire, session_id, use_onion, attempts, mailboxed, created_at, last_attempt
+         FROM dm_outbox WHERE peer_id = ?1 ORDER BY created_at ASC, rowid ASC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![peer_id, limit as i64], |row| {
+        Ok(DmOutboxEntry {
+            msg_id: row.get(0)?,
+            peer_id: row.get(1)?,
+            payload: row.get(2)?,
+            wire: row.get(3)?,
+            session_id: row.get(4)?,
+            use_onion: row.get(5)?,
+            attempts: row.get(6)?,
+            mailboxed: row.get(7)?,
+            created_at: row.get(8)?,
+            last_attempt: row.get(9)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn list_dm_outbox_peers(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT peer_id FROM dm_outbox LIMIT 256")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect()
+}
+
+pub fn set_dm_outbox_wire(
+    conn: &Connection,
+    msg_id: &str,
+    wire: &[u8],
+    session_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE dm_outbox SET wire = ?2, session_id = ?3 WHERE msg_id = ?1",
+        params![msg_id, wire, session_id],
+    )?;
+    Ok(())
+}
+
+pub fn mark_dm_outbox_attempt(conn: &Connection, msg_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE dm_outbox SET attempts = attempts + 1, last_attempt = ?2 WHERE msg_id = ?1",
+        params![msg_id, now_ms()],
+    )?;
+    Ok(())
+}
+
+pub fn mark_dm_outbox_mailboxed(conn: &Connection, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE dm_outbox SET mailboxed = 1 WHERE peer_id = ?1 AND wire IS NOT NULL",
+        params![peer_id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_dm_outbox(conn: &Connection, msg_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM dm_outbox WHERE msg_id = ?1", params![msg_id])?;
+    Ok(())
+}
+
+/// Removes entries older than `max_age_ms`; returns `(peer_id, msg_id, mailboxed)`.
+pub fn expire_dm_outbox(conn: &Connection, max_age_ms: i64) -> Result<Vec<(String, String, bool)>> {
+    let cutoff = now_ms() - max_age_ms;
+    let expired: Vec<(String, String, bool)> = {
+        let mut stmt = conn.prepare(
+            "SELECT peer_id, msg_id, mailboxed FROM dm_outbox WHERE created_at < ?1 LIMIT 1000",
+        )?;
+        let rows = stmt.query_map(params![cutoff], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        rows.collect::<Result<_>>()?
+    };
+    for (_, msg_id, _) in &expired {
+        conn.execute("DELETE FROM dm_outbox WHERE msg_id = ?1", params![msg_id])?;
+    }
+    Ok(expired)
+}
+
+pub fn delete_prekey_bundle(conn: &Connection, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM prekey_bundles WHERE peer_id = ?1",
+        params![peer_id],
     )?;
     Ok(())
 }
@@ -1211,11 +1539,14 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory DB");
         run_migrations(&conn).expect("migrations should succeed on a fresh DB");
 
-        // user_version should be 2 (CURRENT_DB_VERSION)
+        // user_version should be CURRENT_DB_VERSION
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("pragma query");
-        assert_eq!(version, 2, "user_version must be 2 after migration");
+        assert_eq!(
+            version, CURRENT_DB_VERSION,
+            "user_version must be current after migration"
+        );
 
         // Key tables must exist — querying them is sufficient proof
         conn.execute_batch("SELECT 1 FROM rooms LIMIT 1")
@@ -1235,13 +1566,16 @@ mod tests {
         // First run
         run_migrations(&conn).expect("first migration run should succeed");
 
-        // Second run — version is now 2 == CURRENT_DB_VERSION, must be a no-op
+        // Second run — version is now CURRENT_DB_VERSION, must be a no-op
         run_migrations(&conn).expect("second migration run should succeed without error");
 
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("pragma query");
-        assert_eq!(version, 2, "user_version must still be 2 after second run");
+        assert_eq!(
+            version, CURRENT_DB_VERSION,
+            "user_version must be unchanged after second run"
+        );
     }
 
     #[test]
@@ -1272,16 +1606,101 @@ mod tests {
         )
         .expect("manual V1 setup");
 
-        // run_migrations must detect version 1 and upgrade to 2.
-        run_migrations(&conn).expect("V1 -> V2 migration should succeed");
+        // V1 has no ratchet_states table in this minimal fixture; V3 deletes
+        // legacy rows from it, so create it as a full V1 database would have.
+        conn.execute_batch(
+            "CREATE TABLE ratchet_states (peer_id TEXT PRIMARY KEY, state_blob BLOB NOT NULL, updated_at INTEGER NOT NULL);",
+        )
+        .expect("ratchet_states");
+
+        // run_migrations must detect version 1 and upgrade to current.
+        run_migrations(&conn).expect("V1 -> V3 migration should succeed");
 
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("pragma query");
-        assert_eq!(version, 2, "user_version must be 2 after V1->V2 upgrade");
+        assert_eq!(
+            version, CURRENT_DB_VERSION,
+            "user_version must be current after V1 upgrade"
+        );
 
         conn.execute_batch("SELECT 1 FROM used_opk_ids LIMIT 1")
             .expect("used_opk_ids table must exist after V2 migration");
+    }
+
+    #[test]
+    fn test_migration_v2_to_v3_idempotent() {
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+        run_migrations(&conn).expect("migrations");
+        // Pretend we are a V2 database holding a legacy static-DH session.
+        save_ratchet_state(&conn, "dr:peerA", b"legacy").unwrap();
+        save_ratchet_state(&conn, "peerA", b"symmetric").unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+
+        run_migrations(&conn).expect("V2 -> V3");
+        // Re-applying the V3 batch on an already migrated DB must be harmless.
+        migrate_v2_to_v3(&conn).expect("V3 re-run is idempotent");
+        run_migrations(&conn).expect("no-op");
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        assert!(
+            load_ratchet_state(&conn, "dr:peerA").unwrap().is_none(),
+            "legacy DR dropped"
+        );
+        assert!(load_ratchet_state(&conn, "peerA").unwrap().is_some());
+        for t in [
+            "x3dh_signed_prekeys",
+            "dm_sessions",
+            "dm_seen_sessions",
+            "dm_received_ids",
+            "dm_outbox",
+        ] {
+            conn.execute_batch(&format!("SELECT 1 FROM {t} LIMIT 1"))
+                .expect(t);
+        }
+    }
+
+    #[test]
+    fn test_dm_persistence_roundtrip() {
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+        run_migrations(&conn).expect("migrations");
+
+        let spk = [1u8; 32];
+        save_signed_prekey(&conn, &spk, &[2u8; 32], &[3u8; 64], "{}", 10).unwrap();
+        save_signed_prekey(&conn, &[4u8; 32], &[5u8; 32], &[6u8; 64], "{\"n\":2}", 20).unwrap();
+        assert_eq!(
+            load_signed_prekey(&conn, &spk).unwrap(),
+            Some(([2u8; 32], [3u8; 64]))
+        );
+        assert_eq!(latest_signed_prekey(&conn).unwrap().unwrap().1, 20);
+        prune_signed_prekeys(&conn, 1).unwrap();
+        assert!(load_signed_prekey(&conn, &spk).unwrap().is_none());
+
+        assert!(record_dm_received(&conn, "p", "m1").unwrap());
+        assert!(!record_dm_received(&conn, "p", "m1").unwrap(), "dedup");
+        assert!(is_dm_received(&conn, "p", "m1").unwrap());
+
+        insert_dm_outbox(&conn, "m2", "p", b"payload", false).unwrap();
+        set_dm_outbox_wire(&conn, "m2", b"wire", "sid").unwrap();
+        let out = list_dm_outbox(&conn, "p", 10).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].wire.as_deref(), Some(&b"wire"[..]));
+        assert_eq!(list_dm_outbox_peers(&conn).unwrap(), vec!["p".to_string()]);
+        delete_dm_outbox(&conn, "m2").unwrap();
+        assert!(list_dm_outbox(&conn, "p", 10).unwrap().is_empty());
+
+        mark_dm_session_seen(&conn, "p", "s1").unwrap();
+        assert!(is_dm_session_seen(&conn, "p", "s1").unwrap());
+        save_dm_session(&conn, "p", b"blob").unwrap();
+        assert_eq!(
+            load_dm_session(&conn, "p").unwrap().as_deref(),
+            Some(&b"blob"[..])
+        );
+        delete_dm_session(&conn, "p").unwrap();
+        assert!(load_dm_session(&conn, "p").unwrap().is_none());
     }
 
     #[test]

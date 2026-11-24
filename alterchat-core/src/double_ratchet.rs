@@ -5,10 +5,13 @@
 /// her cevap mesajında yeni bir X25519 ephemeral keypair üretilir,
 /// ortak sır yenilenir (post-compromise security).
 ///
+/// The message header is always authenticated as AEAD associated data, and
+/// decryption only commits state changes after the AEAD check succeeds.
+///
 /// Kılavuz: https://signal.org/docs/specifications/doubleratchet/
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
-    aead::{Aead, AeadCore, KeyInit, OsRng},
+    aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
 };
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
@@ -19,6 +22,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 // ─── Sabitler ────────────────────────────────────────────────────────────────
 
 const MAX_SKIP: u64 = 1000;
+/// Upper bound on stored skipped message keys across all chains.
+const MAX_SKIPPED_TOTAL: usize = 2000;
 
 // ─── Tip tanımları ───────────────────────────────────────────────────────────
 
@@ -49,14 +54,14 @@ pub struct SkippedKey {
     pub mk: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DrHeader {
     pub dh: [u8; 32], // Gönderenin DH public key
     pub pn: u64,      // Önceki zincirdeki mesaj sayısı
     pub n: u64,       // Bu mesajın sıra numarası
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DrEnvelope {
     pub header: DrHeader,
     pub nonce: [u8; 12],
@@ -69,8 +74,10 @@ fn kdf_rk(rk: &[u8; 32], dh_out: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(rk), dh_out);
     let mut new_rk = [0u8; 32];
     let mut ck = [0u8; 32];
-    hk.expand(b"root", &mut new_rk).unwrap();
-    hk.expand(b"chain", &mut ck).unwrap();
+    hk.expand(b"root", &mut new_rk)
+        .expect("valid HKDF output length");
+    hk.expand(b"chain", &mut ck)
+        .expect("valid HKDF output length");
     (new_rk, ck)
 }
 
@@ -78,8 +85,10 @@ fn kdf_ck(ck: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(ck), &[]);
     let mut new_ck = [0u8; 32];
     let mut mk = [0u8; 32];
-    hk.expand(b"chain", &mut new_ck).unwrap();
-    hk.expand(b"msg", &mut mk).unwrap();
+    hk.expand(b"chain", &mut new_ck)
+        .expect("valid HKDF output length");
+    hk.expand(b"msg", &mut mk)
+        .expect("valid HKDF output length");
     (new_ck, mk)
 }
 
@@ -89,11 +98,22 @@ fn dh(secret_bytes: &[u8; 32], pub_bytes: &[u8; 32]) -> [u8; 32] {
     *secret.diffie_hellman(&pubkey).as_bytes()
 }
 
+/// Associated data passed to AES-GCM: caller AD followed by the encoded
+/// header, so a modified header is rejected by the AEAD check.
+fn aead_ad(ad: &[u8], header: &DrHeader) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ad.len() + 48);
+    out.extend_from_slice(ad);
+    out.extend_from_slice(&header.dh);
+    out.extend_from_slice(&header.pn.to_be_bytes());
+    out.extend_from_slice(&header.n.to_be_bytes());
+    out
+}
+
 // ─── Başlatma ────────────────────────────────────────────────────────────────
 
 /// Alice (başlatan) tarafı için başlangıç durumu.
 /// sk: X3DH shared secret
-/// bob_dh_pub: Bob'un ilk DH public key'i
+/// bob_dh_pub: Bob'un ilk DH public key'i (signed prekey)
 pub fn init_alice(sk: [u8; 32], bob_dh_pub: [u8; 32]) -> DrState {
     // StaticSecret kullan — hem serialize edilebilir hem DH için yeniden kullanılabilir
     let dh_send_secret = StaticSecret::random_from_rng(OsRng);
@@ -120,7 +140,7 @@ pub fn init_alice(sk: [u8; 32], bob_dh_pub: [u8; 32]) -> DrState {
 
 /// Bob (alan) tarafı için başlangıç durumu.
 /// sk: X3DH shared secret
-/// bob_dh_secret: Bob'un ilk DH secret key bytes'ı
+/// bob_dh_secret: Bob'un ilk DH secret key bytes'ı (signed prekey secret)
 pub fn init_bob(sk: [u8; 32], bob_dh_secret: [u8; 32], bob_dh_pub: [u8; 32]) -> DrState {
     DrState {
         dh_send: bob_dh_secret,
@@ -139,22 +159,37 @@ pub fn init_bob(sk: [u8; 32], bob_dh_secret: [u8; 32], bob_dh_pub: [u8; 32]) -> 
 // ─── Şifreleme ────────────────────────────────────────────────────────────────
 
 pub fn encrypt(state: &mut DrState, plaintext: &[u8]) -> Result<DrEnvelope, &'static str> {
+    encrypt_with_ad(state, plaintext, &[])
+}
+
+/// Encrypts with associated data `ad`; the header is always authenticated too.
+pub fn encrypt_with_ad(
+    state: &mut DrState,
+    plaintext: &[u8],
+    ad: &[u8],
+) -> Result<DrEnvelope, &'static str> {
     let ck = state.ck_send.as_ref().ok_or("No send chain key")?;
     let (new_ck, mk) = kdf_ck(ck);
-    state.ck_send = Some(new_ck);
-
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&mk));
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|_| "Encryption failed")?;
 
     let header = DrHeader {
         dh: state.dh_send_pub,
         pn: state.pn,
         n: state.n_send,
     };
-    state.n_send += 1;
+    let next_n = state.n_send.checked_add(1).ok_or("Send counter overflow")?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&mk));
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad: &aead_ad(ad, &header),
+            },
+        )
+        .map_err(|_| "Encryption failed")?;
+    state.ck_send = Some(new_ck);
+    state.n_send = next_n;
 
     Ok(DrEnvelope {
         header,
@@ -166,8 +201,34 @@ pub fn encrypt(state: &mut DrState, plaintext: &[u8]) -> Result<DrEnvelope, &'st
 // ─── Şifre çözme ─────────────────────────────────────────────────────────────
 
 pub fn decrypt(state: &mut DrState, envelope: &DrEnvelope) -> Result<Vec<u8>, &'static str> {
+    decrypt_with_ad(state, envelope, &[])
+}
+
+/// Decrypts with associated data `ad`. The state is only updated when the
+/// AEAD check succeeds, so forged or corrupted messages (network input)
+/// cannot desynchronise the session.
+pub fn decrypt_with_ad(
+    state: &mut DrState,
+    envelope: &DrEnvelope,
+    ad: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    let mut work = state.clone();
+    let plaintext = decrypt_in_place(&mut work, envelope, ad)?;
+    if work.skipped.len() > MAX_SKIPPED_TOTAL {
+        let excess = work.skipped.len() - MAX_SKIPPED_TOTAL;
+        work.skipped.drain(..excess);
+    }
+    *state = work;
+    Ok(plaintext)
+}
+
+fn decrypt_in_place(
+    state: &mut DrState,
+    envelope: &DrEnvelope,
+    ad: &[u8],
+) -> Result<Vec<u8>, &'static str> {
     // Önce atlanan mesajlar listesinde ara
-    if let Some(plaintext) = try_skipped(state, envelope)? {
+    if let Some(plaintext) = try_skipped(state, envelope, ad)? {
         return Ok(plaintext);
     }
 
@@ -193,14 +254,15 @@ pub fn decrypt(state: &mut DrState, envelope: &DrEnvelope) -> Result<Vec<u8>, &'
     let ck = state.ck_recv.as_ref().ok_or("No recv chain key")?;
     let (new_ck, mk) = kdf_ck(ck);
     state.ck_recv = Some(new_ck);
-    state.n_recv += 1;
+    state.n_recv = state.n_recv.saturating_add(1);
 
-    decrypt_with_key(&mk, envelope)
+    decrypt_with_key(&mk, envelope, ad)
 }
 
 fn try_skipped(
     state: &mut DrState,
     envelope: &DrEnvelope,
+    ad: &[u8],
 ) -> Result<Option<Vec<u8>>, &'static str> {
     let key_idx = state
         .skipped
@@ -208,23 +270,22 @@ fn try_skipped(
         .position(|sk| sk.dh_pub == envelope.header.dh && sk.n == envelope.header.n);
     if let Some(idx) = key_idx {
         let mk = state.skipped.remove(idx).mk;
-        let plaintext = decrypt_with_key(&mk, envelope)?;
+        let plaintext = decrypt_with_key(&mk, envelope, ad)?;
         return Ok(Some(plaintext));
     }
     Ok(None)
 }
 
 fn skip_message_keys(state: &mut DrState, until: u64) -> Result<(), &'static str> {
-    if state.n_recv + MAX_SKIP < until {
+    if state.n_recv.saturating_add(MAX_SKIP) < until {
         return Err("Too many skipped messages");
     }
-    if state.ck_recv.is_none() {
+    let Some(mut ck) = state.ck_recv else {
         return Ok(());
-    }
+    };
     while state.n_recv < until {
-        let ck = state.ck_recv.as_ref().unwrap();
-        let (new_ck, mk) = kdf_ck(ck);
-        state.ck_recv = Some(new_ck);
+        let (new_ck, mk) = kdf_ck(&ck);
+        ck = new_ck;
         state.skipped.push(SkippedKey {
             dh_pub: state.dh_recv.unwrap_or([0u8; 32]),
             n: state.n_recv,
@@ -232,6 +293,7 @@ fn skip_message_keys(state: &mut DrState, until: u64) -> Result<(), &'static str
         });
         state.n_recv += 1;
     }
+    state.ck_recv = Some(ck);
     Ok(())
 }
 
@@ -259,11 +321,21 @@ fn dh_ratchet(state: &mut DrState, header_dh: [u8; 32]) {
     state.ck_send = Some(ck_send);
 }
 
-fn decrypt_with_key(mk: &[u8; 32], envelope: &DrEnvelope) -> Result<Vec<u8>, &'static str> {
+fn decrypt_with_key(
+    mk: &[u8; 32],
+    envelope: &DrEnvelope,
+    ad: &[u8],
+) -> Result<Vec<u8>, &'static str> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(mk));
     let nonce = Nonce::from_slice(&envelope.nonce);
     cipher
-        .decrypt(nonce, envelope.ciphertext.as_ref())
+        .decrypt(
+            nonce,
+            Payload {
+                msg: envelope.ciphertext.as_ref(),
+                aad: &aead_ad(ad, &envelope.header),
+            },
+        )
         .map_err(|_| "Decryption failed")
 }
 
@@ -331,21 +403,44 @@ mod tests {
     fn test_forward_secrecy() {
         let (mut alice, mut bob) = make_pair();
 
-        // İlk DH ratchet döngüsünden bir mesaj
         let e1 = encrypt(&mut alice, b"Gizli mesaj").unwrap();
-        let initial_mk = {
-            let ck = alice.ck_send.unwrap();
-            let (_, mk) = kdf_ck(&ck);
-            mk
-        };
-
         decrypt(&mut bob, &e1).unwrap();
 
-        // DH ratchet döndükten sonra ilk döngünün anahtarı geçersiz
         let e2 = encrypt(&mut bob, b"DH ratchet tetiklendi").unwrap();
         decrypt(&mut alice, &e2).unwrap();
 
-        // initial_mk artık hiçbir şeyi şifreli açamaz (forward secrecy)
-        let _ = initial_mk; // Kullanıldığını belgeliyoruz
+        // A replayed message cannot be decrypted twice.
+        assert!(decrypt(&mut bob, &e1).is_err());
+    }
+
+    #[test]
+    fn test_forged_message_does_not_corrupt_state() {
+        let (mut alice, mut bob) = make_pair();
+        let e1 = encrypt(&mut alice, b"one").unwrap();
+        let e2 = encrypt(&mut alice, b"two").unwrap();
+
+        // Header tampering is caught by the AEAD (header is associated data).
+        let mut forged = e1.clone();
+        forged.header.n = 999;
+        assert!(decrypt(&mut bob, &forged).is_err());
+        let mut forged = e1.clone();
+        forged.header.dh = [9u8; 32];
+        assert!(decrypt(&mut bob, &forged).is_err());
+        // Far-future counter is bounded.
+        let mut forged = e1.clone();
+        forged.header.n = u64::MAX;
+        assert!(decrypt(&mut bob, &forged).is_err());
+
+        // Genuine messages still decrypt after the forgeries.
+        assert_eq!(decrypt(&mut bob, &e1).unwrap(), b"one");
+        assert_eq!(decrypt(&mut bob, &e2).unwrap(), b"two");
+    }
+
+    #[test]
+    fn test_associated_data_mismatch_rejected() {
+        let (mut alice, mut bob) = make_pair();
+        let e1 = encrypt_with_ad(&mut alice, b"hi", b"ad-1").unwrap();
+        assert!(decrypt_with_ad(&mut bob, &e1, b"ad-2").is_err());
+        assert_eq!(decrypt_with_ad(&mut bob, &e1, b"ad-1").unwrap(), b"hi");
     }
 }

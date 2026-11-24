@@ -461,13 +461,14 @@ being trusted for high-risk communication.
 
 Suggested next milestones:
 
-- Wire the real X3DH + ML-KEM handshake into DM session setup. Sessions
-  currently start from a static X25519 exchange, and prekey secrets are not
-  persisted.
-- Let the higher-peer-id side start a DM session. Today the lower peer id must
-  send first.
-- Authenticate the offline DHT mailbox (sender signatures, friend-only, dedup)
-  or drop it, since it bypasses the ratchet's forward secrecy.
+- Done: DMs use X3DH + ML-KEM-768 against Ed25519-signed prekey bundles,
+  then the Double Ratchet. Either side can send first. Prekey secrets are
+  persisted in the encrypted DB.
+- Done: the offline DHT mailbox carries Double Ratchet messages in records
+  signed per (recipient, sender), accepted only from non-blocked friends and
+  deduplicated by message id.
+- Make bootstrap nodes validate mailbox records too (only AlterChat clients in
+  DHT server mode filter them today), and add one-time prekeys.
 - Send incremental CRDT changes and sign room messages. Whole-document
   broadcasts hit gossipsub size limits, and senders are unauthenticated.
 - Finish I2P/SOCKS5 outbound routing (currently refused: fail closed).

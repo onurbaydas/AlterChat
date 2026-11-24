@@ -218,6 +218,10 @@ pub async fn create_swarm(
     // Kademlia configuration for DHT (peer discovery and content routing)
     let mut cfg = kad::Config::new(kad::PROTOCOL_NAME);
     cfg.set_query_timeout(Duration::from_secs(5 * 60));
+    // Inbound PUTs are validated by the application before storing (see
+    // `mailbox::accept_dht_record`); the event loop must store accepted
+    // records and provider records itself.
+    cfg.set_record_filtering(kad::StoreInserts::FilterBoth);
     let store = kad::store::MemoryStore::new(local_peer_id);
     let mut kademlia = kad::Behaviour::with_config(local_peer_id, store, cfg);
     if config.dht_server_mode {

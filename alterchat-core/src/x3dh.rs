@@ -1,4 +1,15 @@
-use ed25519_dalek::{Signer, SigningKey};
+//! X3DH key agreement extended with ML-KEM-768 (hybrid, post-quantum).
+//!
+//! Every prekey bundle is signed by the owner's Ed25519 identity key (the key
+//! behind the libp2p `PeerId`). Both signatures cover the X3DH identity key,
+//! so the bundle as a whole is bound to the peer id. The initial message
+//! carries an Ed25519 signature over the initiator's X3DH identity key so
+//! the responder can bind it to the initiator's peer id too.
+//!
+//! The X25519 X3DH identity key is derived from the Ed25519 seed with HKDF and
+//! a dedicated label (domain separation): it never reuses the raw Ed25519
+//! seed as an X25519 scalar.
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use ml_kem::MlKem768;
 use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey, KeyExport};
@@ -8,125 +19,230 @@ use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+const SPK_SIG_DOMAIN: &[u8] = b"AlterChat-X3DH-SPK-v1";
+const KEM_SIG_DOMAIN: &[u8] = b"AlterChat-X3DH-KEM-v1";
+const IK_SIG_DOMAIN: &[u8] = b"AlterChat-X3DH-IK-v1";
+const IK_DERIVE_SALT: &[u8] = b"AlterChat-X3DH-IK-derive-v1";
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PreKeyBundle {
-    pub identity_key: [u8; 32], // X25519 public key
+    pub identity_key: [u8; 32], // X25519 X3DH identity public key
     pub signed_prekey: [u8; 32],
+    /// Ed25519 signature over `SPK_SIG_DOMAIN || identity_key || signed_prekey || created_at`.
     pub signed_prekey_sig: Vec<u8>,
+    /// One-time prekeys are not used; initiators ignore this field.
     pub one_time_prekey: Option<[u8; 32]>,
     pub ml_kem_ek: Vec<u8>,
+    /// Ed25519 signature over `KEM_SIG_DOMAIN || identity_key || ml_kem_ek`.
     pub ml_kem_ek_sig: Vec<u8>,
+    /// Creation time (unix ms), covered by `signed_prekey_sig`.
+    #[serde(default)]
+    pub created_at: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Zeroize, ZeroizeOnDrop)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct InitialMessage {
     pub identity_key: [u8; 32],
+    /// Ed25519 signature over `IK_SIG_DOMAIN || identity_key` by the initiator.
+    pub identity_sig: Vec<u8>,
     pub ephemeral_key: [u8; 32],
+    /// The responder's signed prekey this handshake was made against.
+    pub signed_prekey: [u8; 32],
     pub ml_kem_ct: Vec<u8>,
     pub used_opk: bool,
 }
 
-pub fn generate_x3dh_shared_secret(
-    my_identity: &StaticSecret,
-    my_ephemeral: &StaticSecret, // Changed to StaticSecret for reusability
-    peer_bundle: &PreKeyBundle,
-    ss_kem: &[u8],
-) -> [u8; 32] {
-    let peer_ik = X25519PublicKey::from(peer_bundle.identity_key);
-    let peer_spk = X25519PublicKey::from(peer_bundle.signed_prekey);
-    let peer_opk = peer_bundle.one_time_prekey.map(X25519PublicKey::from);
+/// Secret half of a signed prekey: X25519 signed-prekey secret and the
+/// 64-byte ML-KEM-768 decapsulation seed.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct SignedPreKeySecrets {
+    pub spk_secret: [u8; 32],
+    pub ml_kem_seed: [u8; 64],
+}
 
-    let dh1 = my_identity.diffie_hellman(&peer_spk);
-    let dh2 = my_ephemeral.diffie_hellman(&peer_ik);
-    let dh3 = my_ephemeral.diffie_hellman(&peer_spk);
+/// Derives the X25519 X3DH identity secret from the Ed25519 identity seed.
+pub fn derive_x3dh_identity_secret(ed25519_seed: &[u8; 32]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(IK_DERIVE_SALT), ed25519_seed);
+    let mut out = [0u8; 32];
+    hk.expand(b"x25519 identity", &mut out)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    out
+}
 
-    let mut ikm = Vec::new();
-    ikm.extend_from_slice(b"X3DH_MLKEM768_V1");
-    ikm.extend_from_slice(dh1.as_bytes());
-    ikm.extend_from_slice(dh2.as_bytes());
-    ikm.extend_from_slice(dh3.as_bytes());
+fn spk_message(ik: &[u8; 32], spk: &[u8; 32], created_at: u64) -> Vec<u8> {
+    let mut m = Vec::with_capacity(SPK_SIG_DOMAIN.len() + 72);
+    m.extend_from_slice(SPK_SIG_DOMAIN);
+    m.extend_from_slice(ik);
+    m.extend_from_slice(spk);
+    m.extend_from_slice(&created_at.to_be_bytes());
+    m
+}
 
-    if let Some(opk) = peer_opk {
-        let dh4 = my_ephemeral.diffie_hellman(&opk);
-        ikm.extend_from_slice(dh4.as_bytes());
+fn kem_message(ik: &[u8; 32], ek: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(KEM_SIG_DOMAIN.len() + 32 + ek.len());
+    m.extend_from_slice(KEM_SIG_DOMAIN);
+    m.extend_from_slice(ik);
+    m.extend_from_slice(ek);
+    m
+}
+
+fn ik_message(ik: &[u8; 32]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(IK_SIG_DOMAIN.len() + 32);
+    m.extend_from_slice(IK_SIG_DOMAIN);
+    m.extend_from_slice(ik);
+    m
+}
+
+/// Strict Ed25519 verification; never panics on malformed input.
+pub fn verify_ed25519(public_key: &[u8; 32], message: &[u8], signature: &[u8]) -> bool {
+    let Ok(vk) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    let Ok(sig) = Signature::from_slice(signature) else {
+        return false;
+    };
+    vk.verify_strict(message, &sig).is_ok()
+}
+
+/// Signs the X3DH identity key with the Ed25519 identity seed.
+pub fn sign_identity_key(ed25519_seed: &[u8; 32], ik_pub: &[u8; 32]) -> Vec<u8> {
+    SigningKey::from_bytes(ed25519_seed)
+        .sign(&ik_message(ik_pub))
+        .to_bytes()
+        .to_vec()
+}
+
+/// Verifies both bundle signatures against the owner's Ed25519 public key.
+pub fn verify_prekey_bundle(
+    bundle: &PreKeyBundle,
+    signer_ed25519_pub: &[u8; 32],
+) -> Result<(), &'static str> {
+    if !verify_ed25519(
+        signer_ed25519_pub,
+        &spk_message(
+            &bundle.identity_key,
+            &bundle.signed_prekey,
+            bundle.created_at,
+        ),
+        &bundle.signed_prekey_sig,
+    ) {
+        return Err("Invalid signed prekey signature");
     }
+    if !verify_ed25519(
+        signer_ed25519_pub,
+        &kem_message(&bundle.identity_key, &bundle.ml_kem_ek),
+        &bundle.ml_kem_ek_sig,
+    ) {
+        return Err("Invalid ML-KEM key signature");
+    }
+    Ok(())
+}
 
+fn checked_dh(secret: &StaticSecret, public: &X25519PublicKey) -> Result<[u8; 32], &'static str> {
+    let shared = secret.diffie_hellman(public);
+    if !shared.was_contributory() {
+        return Err("Non-contributory X25519 key");
+    }
+    Ok(*shared.as_bytes())
+}
+
+fn kdf_sk(dh1: &[u8; 32], dh2: &[u8; 32], dh3: &[u8; 32], ss_kem: &[u8]) -> [u8; 32] {
+    let mut ikm = zeroize::Zeroizing::new(Vec::with_capacity(16 + 96 + ss_kem.len()));
+    ikm.extend_from_slice(b"X3DH_MLKEM768_V1");
+    ikm.extend_from_slice(dh1);
+    ikm.extend_from_slice(dh2);
+    ikm.extend_from_slice(dh3);
     ikm.extend_from_slice(ss_kem);
-
     let hkdf = Hkdf::<Sha256>::new(None, &ikm);
     let mut okm = [0u8; 32];
-    hkdf.expand(b"AlterChat_X3DH_SK", &mut okm).unwrap();
+    hkdf.expand(b"AlterChat_X3DH_SK", &mut okm)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
     okm
 }
 
+/// Initiator side. Verifies the bundle signatures against
+/// `peer_signer_ed25519_pub` before using any key from it.
 pub fn initiate_x3dh(
     my_identity: &StaticSecret,
+    my_ed25519_seed: &[u8; 32],
     peer_bundle: &PreKeyBundle,
+    peer_signer_ed25519_pub: &[u8; 32],
 ) -> Result<(InitialMessage, [u8; 32]), &'static str> {
-    // We use StaticSecret for the ephemeral key because we need to reuse it for multiple DH calls
-    let mut ephemeral_bytes = [0u8; 32];
-    rand::rng().fill(&mut ephemeral_bytes);
-    let my_ephemeral = StaticSecret::from(ephemeral_bytes);
+    verify_prekey_bundle(peer_bundle, peer_signer_ed25519_pub)?;
+
+    let mut ephemeral_bytes = zeroize::Zeroizing::new([0u8; 32]);
+    rand::rng().fill(&mut ephemeral_bytes[..]);
+    let my_ephemeral = StaticSecret::from(*ephemeral_bytes);
 
     let my_ek_pub = X25519PublicKey::from(&my_ephemeral);
     let my_ik_pub = X25519PublicKey::from(my_identity);
 
-    // KEM Encapsulation
     let ek_arr: &ml_kem::kem::Key<EncapsulationKey<MlKem768>> = peer_bundle
         .ml_kem_ek
         .as_slice()
         .try_into()
         .map_err(|_| "Invalid ML-KEM EK size")?;
     let ek = EncapsulationKey::<MlKem768>::new(ek_arr).map_err(|_| "Invalid ML-KEM key")?;
-    let (ct, ss_kem) = ek.encapsulate(); // encapsulate does not take &mut OsRng and does not return Result
+    let (ct, ss_kem) = ek.encapsulate();
 
-    let sk =
-        generate_x3dh_shared_secret(my_identity, &my_ephemeral, peer_bundle, ss_kem.as_slice());
+    let peer_ik = X25519PublicKey::from(peer_bundle.identity_key);
+    let peer_spk = X25519PublicKey::from(peer_bundle.signed_prekey);
+    let dh1 = checked_dh(my_identity, &peer_spk)?;
+    let dh2 = checked_dh(&my_ephemeral, &peer_ik)?;
+    let dh3 = checked_dh(&my_ephemeral, &peer_spk)?;
+    let sk = kdf_sk(&dh1, &dh2, &dh3, ss_kem.as_slice());
 
     let init_msg = InitialMessage {
         identity_key: *my_ik_pub.as_bytes(),
+        identity_sig: sign_identity_key(my_ed25519_seed, my_ik_pub.as_bytes()),
         ephemeral_key: *my_ek_pub.as_bytes(),
+        signed_prekey: peer_bundle.signed_prekey,
         ml_kem_ct: ct.as_slice().to_vec(),
-        used_opk: peer_bundle.one_time_prekey.is_some(),
+        // One-time prekeys are not part of this protocol version.
+        used_opk: false,
     };
 
     Ok((init_msg, sk))
 }
 
-/// Login sırasında çağrılır: imzalı X3DH + ML-KEM PreKeyBundle üretir.
-/// `identity_secret`: X25519 kimlik anahtarı (offline_secret_bytes)
-/// `ed_signing_key`: Ed25519 imza anahtarı (aynı 32 byte'tan türetilir)
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Generates a fresh signed prekey + ML-KEM-768 keypair and the signed
+/// bundle. The returned secrets MUST be persisted, otherwise nobody can
+/// complete a handshake against the published bundle.
+/// `identity_secret`: X25519 X3DH identity secret
+/// (see [`derive_x3dh_identity_secret`]); `ed_signing_key`: Ed25519 seed.
 pub fn generate_prekey_bundle(
     identity_secret: &[u8; 32],
     ed_signing_key: &[u8; 32],
-) -> (PreKeyBundle, Vec<u8>) {
+) -> (PreKeyBundle, SignedPreKeySecrets) {
     let my_identity = StaticSecret::from(*identity_secret);
     let ik_pub = *X25519PublicKey::from(&my_identity).as_bytes();
 
-    // Signed prekey: rastgele X25519 keypair
-    let spk_secret = {
-        let mut bytes = [0u8; 32];
-        rand::rng().fill(&mut bytes);
-        StaticSecret::from(bytes)
-    };
+    let mut spk_bytes = [0u8; 32];
+    rand::rng().fill(&mut spk_bytes);
+    let spk_secret = StaticSecret::from(spk_bytes);
     let spk_pub = *X25519PublicKey::from(&spk_secret).as_bytes();
+    let created_at = now_ms();
 
-    // Ed25519 ile signed prekey imzala
     let signing_key = SigningKey::from_bytes(ed_signing_key);
-    let spk_sig = signing_key.sign(&spk_pub).to_bytes().to_vec();
+    let spk_sig = signing_key
+        .sign(&spk_message(&ik_pub, &spk_pub, created_at))
+        .to_bytes()
+        .to_vec();
 
-    // ML-KEM 768 keypair üret: rastgele 64-byte seed → DecapsulationKey → EncapsulationKey
-    let (ml_kem_ek_bytes, ml_kem_dk_bytes) = {
-        let mut seed_bytes = [0u8; 64];
-        rand::rng().fill(&mut seed_bytes);
-        let seed: ml_kem::Seed = seed_bytes.into();
-        let dk = DecapsulationKey::<MlKem768>::from_seed(seed);
-        let ek = dk.encapsulation_key();
-        let ek_bytes: Vec<u8> = KeyExport::to_bytes(ek).as_slice().to_vec();
-        // seed (64 bytes) olarak sakla; dk yeniden oluşturmak için yeterli
-        (ek_bytes, seed.to_vec())
-    };
-    let ml_kem_ek_sig = signing_key.sign(&ml_kem_ek_bytes).to_bytes().to_vec();
+    let mut seed_bytes = [0u8; 64];
+    rand::rng().fill(&mut seed_bytes);
+    let ml_kem_ek_bytes = ml_kem_ek_from_seed(&seed_bytes);
+    let ml_kem_ek_sig = signing_key
+        .sign(&kem_message(&ik_pub, &ml_kem_ek_bytes))
+        .to_bytes()
+        .to_vec();
 
     let bundle = PreKeyBundle {
         identity_key: ik_pub,
@@ -135,197 +251,181 @@ pub fn generate_prekey_bundle(
         one_time_prekey: None,
         ml_kem_ek: ml_kem_ek_bytes,
         ml_kem_ek_sig,
+        created_at,
     };
-    (bundle, ml_kem_dk_bytes)
+    let secrets = SignedPreKeySecrets {
+        spk_secret: *spk_secret.as_bytes(),
+        ml_kem_seed: seed_bytes,
+    };
+    spk_bytes.zeroize();
+    seed_bytes.zeroize();
+    (bundle, secrets)
 }
 
-// IMPORTANT: Before calling this function, check is_opk_used(conn, opk_id) and
-// reject if true. Call mark_opk_used(conn, opk_id, peer_id) after successful exchange.
+fn ml_kem_dk_from_seed(seed: &[u8; 64]) -> DecapsulationKey<MlKem768> {
+    let seed: ml_kem::Seed = (*seed).into();
+    DecapsulationKey::<MlKem768>::from_seed(seed)
+}
+
+fn ml_kem_ek_from_seed(seed: &[u8; 64]) -> Vec<u8> {
+    let dk = ml_kem_dk_from_seed(seed);
+    KeyExport::to_bytes(dk.encapsulation_key())
+        .as_slice()
+        .to_vec()
+}
+
+/// Responder side. Verifies the initiator's identity-key signature against
+/// `peer_signer_ed25519_pub` and that the handshake targets `my_spk`.
 pub fn receive_x3dh(
     my_identity: &StaticSecret,
-    my_signed_prekey: &StaticSecret,
-    my_one_time_prekey: Option<&StaticSecret>,
-    my_ml_kem_dk: &DecapsulationKey<MlKem768>,
+    my_spk: &SignedPreKeySecrets,
     init_msg: &InitialMessage,
+    peer_signer_ed25519_pub: &[u8; 32],
 ) -> Result<[u8; 32], &'static str> {
-    let peer_ik = X25519PublicKey::from(init_msg.identity_key);
-    let peer_ek = X25519PublicKey::from(init_msg.ephemeral_key);
-
-    let dh1 = my_signed_prekey.diffie_hellman(&peer_ik);
-    let dh2 = my_identity.diffie_hellman(&peer_ek);
-    let dh3 = my_signed_prekey.diffie_hellman(&peer_ek);
-
-    let mut ikm = Vec::new();
-    ikm.extend_from_slice(b"X3DH_MLKEM768_V1");
-    ikm.extend_from_slice(dh1.as_bytes());
-    ikm.extend_from_slice(dh2.as_bytes());
-    ikm.extend_from_slice(dh3.as_bytes());
-
+    if !verify_ed25519(
+        peer_signer_ed25519_pub,
+        &ik_message(&init_msg.identity_key),
+        &init_msg.identity_sig,
+    ) {
+        return Err("Invalid initiator identity signature");
+    }
     if init_msg.used_opk {
-        let opk = my_one_time_prekey.ok_or("Peer used OPK but we don't have it")?;
-        let dh4 = opk.diffie_hellman(&peer_ek);
-        ikm.extend_from_slice(dh4.as_bytes());
+        return Err("One-time prekeys are not supported");
+    }
+    let spk_secret = StaticSecret::from(my_spk.spk_secret);
+    if X25519PublicKey::from(&spk_secret).as_bytes() != &init_msg.signed_prekey {
+        return Err("Handshake targets a different signed prekey");
     }
 
-    // Decapsulate KEM
+    let peer_ik = X25519PublicKey::from(init_msg.identity_key);
+    let peer_ek = X25519PublicKey::from(init_msg.ephemeral_key);
+    let dh1 = checked_dh(&spk_secret, &peer_ik)?;
+    let dh2 = checked_dh(my_identity, &peer_ek)?;
+    let dh3 = checked_dh(&spk_secret, &peer_ek)?;
+
     let ct_array = init_msg
         .ml_kem_ct
         .as_slice()
         .try_into()
         .map_err(|_| "Invalid ML-KEM CT size")?;
-    let ss_kem = my_ml_kem_dk.decapsulate(&ct_array); // decapsulate does not return a Result in ml-kem
+    let dk = ml_kem_dk_from_seed(&my_spk.ml_kem_seed);
+    let ss_kem = dk.decapsulate(&ct_array);
 
-    ikm.extend_from_slice(ss_kem.as_slice());
-
-    let hkdf = Hkdf::<Sha256>::new(None, &ikm);
-    let mut okm = [0u8; 32];
-    hkdf.expand(b"AlterChat_X3DH_SK", &mut okm).unwrap();
-    Ok(okm)
+    Ok(kdf_sk(&dh1, &dh2, &dh3, ss_kem.as_slice()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build a complete set of Bob's key material for testing.
-    /// generate_prekey_bundle does not expose private keys, so keys are created
-    /// manually here so the test holds every secret needed to call receive_x3dh.
-    fn make_bob_keys() -> (
-        StaticSecret,
-        StaticSecret,
-        DecapsulationKey<MlKem768>,
-        PreKeyBundle,
-    ) {
-        use rand::RngExt;
+    struct Party {
+        ed_seed: [u8; 32],
+        ed_pub: [u8; 32],
+        ik: StaticSecret,
+    }
 
-        // Bob's long-term identity secret (X25519)
-        let mut ik_bytes = [0u8; 32];
-        rand::rng().fill(&mut ik_bytes);
-        let bob_identity = StaticSecret::from(ik_bytes);
-        let bob_ik_pub = *X25519PublicKey::from(&bob_identity).as_bytes();
-
-        // Bob's signed prekey (X25519)
-        let mut spk_bytes = [0u8; 32];
-        rand::rng().fill(&mut spk_bytes);
-        let bob_spk = StaticSecret::from(spk_bytes);
-        let bob_spk_pub = *X25519PublicKey::from(&bob_spk).as_bytes();
-
-        // Ed25519 signing key (derived from a random seed for the test)
+    fn party() -> Party {
         let mut ed_seed = [0u8; 32];
         rand::rng().fill(&mut ed_seed);
-        let signing_key = SigningKey::from_bytes(&ed_seed);
-        let spk_sig = signing_key.sign(&bob_spk_pub).to_bytes().to_vec();
-
-        // ML-KEM 768 keypair
-        let mut kem_seed_bytes = [0u8; 64];
-        rand::rng().fill(&mut kem_seed_bytes);
-        let kem_seed: ml_kem::Seed = kem_seed_bytes.into();
-        let bob_dk = DecapsulationKey::<MlKem768>::from_seed(kem_seed);
-        let bob_ek = bob_dk.encapsulation_key();
-        let ek_bytes: Vec<u8> = KeyExport::to_bytes(bob_ek).as_slice().to_vec();
-        let ml_kem_ek_sig = signing_key.sign(&ek_bytes).to_bytes().to_vec();
-
-        let bundle = PreKeyBundle {
-            identity_key: bob_ik_pub,
-            signed_prekey: bob_spk_pub,
-            signed_prekey_sig: spk_sig,
-            one_time_prekey: None,
-            ml_kem_ek: ek_bytes,
-            ml_kem_ek_sig,
-        };
-
-        (bob_identity, bob_spk, bob_dk, bundle)
+        let ed_pub = SigningKey::from_bytes(&ed_seed).verifying_key().to_bytes();
+        let ik = StaticSecret::from(derive_x3dh_identity_secret(&ed_seed));
+        Party {
+            ed_seed,
+            ed_pub,
+            ik,
+        }
     }
 
-    // -------------------------------------------------------------------------
-    // Test 1: Basic X3DH key exchange — both sides derive the same secret.
-    // -------------------------------------------------------------------------
+    fn bundle_for(p: &Party) -> (PreKeyBundle, SignedPreKeySecrets) {
+        generate_prekey_bundle(&p.ik.to_bytes(), &p.ed_seed)
+    }
+
     #[test]
-    fn test_x3dh_basic_key_exchange() {
-        // Build Bob's full key material.
-        let (bob_identity, bob_spk, bob_dk, bob_bundle) = make_bob_keys();
+    fn test_x3dh_mlkem_full_handshake() {
+        let alice = party();
+        let bob = party();
+        let (bundle, bob_spk) = bundle_for(&bob);
 
-        // Alice's identity key.
-        let mut alice_ik_bytes = [0u8; 32];
-        rand::rng().fill(&mut alice_ik_bytes);
-        let alice_identity = StaticSecret::from(alice_ik_bytes);
-
-        // Alice initiates X3DH using Bob's published bundle.
-        let (init_msg, alice_ss) =
-            initiate_x3dh(&alice_identity, &bob_bundle).expect("initiate_x3dh should succeed");
-
-        // Bob receives and derives his side of the shared secret.
-        let bob_ss = receive_x3dh(&bob_identity, &bob_spk, None, &bob_dk, &init_msg)
-            .expect("receive_x3dh should succeed");
-
-        // The shared secrets must match.
-        assert_eq!(alice_ss, bob_ss, "shared secrets must be equal");
-
-        // Neither secret should be the all-zero value.
-        assert_ne!(alice_ss, [0u8; 32], "shared secret must be non-zero");
+        let (init, alice_sk) =
+            initiate_x3dh(&alice.ik, &alice.ed_seed, &bundle, &bob.ed_pub).expect("initiate");
+        assert_eq!(init.ml_kem_ct.len(), 1088, "ML-KEM-768 ciphertext");
+        let bob_sk = receive_x3dh(&bob.ik, &bob_spk, &init, &alice.ed_pub).expect("receive");
+        assert_eq!(alice_sk, bob_sk);
+        assert_ne!(alice_sk, [0u8; 32]);
     }
 
-    // -------------------------------------------------------------------------
-    // Test 2: A corrupted PreKeyBundle (truncated ML-KEM encapsulation key)
-    // causes initiate_x3dh to return Err.  The bundle has a valid-looking
-    // signed_prekey_sig, but the ml_kem_ek has had one byte removed, making
-    // its length wrong and triggering the "Invalid ML-KEM EK size" error path.
-    // -------------------------------------------------------------------------
     #[test]
-    fn test_x3dh_prekey_signature_verification() {
-        let (_bob_identity, _bob_spk, _bob_dk, mut bob_bundle) = make_bob_keys();
+    fn test_bundle_signature_tamper_rejected() {
+        let alice = party();
+        let bob = party();
+        let mallory = party();
+        let (bundle, _) = bundle_for(&bob);
 
-        // Tamper: flip one byte of the signed prekey signature (simulating a
-        // man-in-the-middle modification), then also corrupt the ML-KEM EK so
-        // that the size check in initiate_x3dh fires — because the current
-        // implementation does not verify Ed25519 signatures before use, the
-        // only code path that returns Err on a tampered bundle is the KEM key
-        // size/validity check.
-        bob_bundle.signed_prekey_sig[0] ^= 0xFF;
-        // Truncate ml_kem_ek by one byte to force "Invalid ML-KEM EK size".
-        bob_bundle.ml_kem_ek.pop();
+        let mut t = bundle.clone();
+        t.signed_prekey[0] ^= 1;
+        assert!(initiate_x3dh(&alice.ik, &alice.ed_seed, &t, &bob.ed_pub).is_err());
 
-        let mut alice_ik_bytes = [0u8; 32];
-        rand::rng().fill(&mut alice_ik_bytes);
-        let alice_identity = StaticSecret::from(alice_ik_bytes);
+        let mut t = bundle.clone();
+        t.ml_kem_ek[10] ^= 1;
+        assert!(initiate_x3dh(&alice.ik, &alice.ed_seed, &t, &bob.ed_pub).is_err());
 
-        let result = initiate_x3dh(&alice_identity, &bob_bundle);
-        assert!(
-            result.is_err(),
-            "initiate_x3dh must return Err when the PreKeyBundle is tampered"
-        );
+        let mut t = bundle.clone();
+        t.identity_key[0] ^= 1;
+        assert!(initiate_x3dh(&alice.ik, &alice.ed_seed, &t, &bob.ed_pub).is_err());
+
+        let mut t = bundle.clone();
+        t.created_at += 1;
+        assert!(initiate_x3dh(&alice.ik, &alice.ed_seed, &t, &bob.ed_pub).is_err());
+
+        let mut t = bundle.clone();
+        t.signed_prekey_sig.truncate(10);
+        assert!(initiate_x3dh(&alice.ik, &alice.ed_seed, &t, &bob.ed_pub).is_err());
+
+        // A bundle validly signed by somebody else is not Bob's bundle.
+        let (mallory_bundle, _) = bundle_for(&mallory);
+        assert!(initiate_x3dh(&alice.ik, &alice.ed_seed, &mallory_bundle, &bob.ed_pub).is_err());
+
+        assert!(initiate_x3dh(&alice.ik, &alice.ed_seed, &bundle, &bob.ed_pub).is_ok());
     }
 
-    // -------------------------------------------------------------------------
-    // Test 3: Two independent X3DH exchanges with fresh keys produce different
-    // shared secrets (uniqueness / randomness check).
-    // -------------------------------------------------------------------------
+    #[test]
+    fn test_initial_message_identity_signature_checked() {
+        let alice = party();
+        let bob = party();
+        let mallory = party();
+        let (bundle, bob_spk) = bundle_for(&bob);
+        let (init, _) =
+            initiate_x3dh(&alice.ik, &alice.ed_seed, &bundle, &bob.ed_pub).expect("initiate");
+        // Claiming to be Mallory fails.
+        assert!(receive_x3dh(&bob.ik, &bob_spk, &init, &mallory.ed_pub).is_err());
+        // Swapping in Mallory's identity key without her signature fails.
+        let mut t = init.clone();
+        t.identity_key = *X25519PublicKey::from(&mallory.ik).as_bytes();
+        assert!(receive_x3dh(&bob.ik, &bob_spk, &t, &alice.ed_pub).is_err());
+        // Wrong signed prekey secret is detected.
+        let (_, other_spk) = bundle_for(&bob);
+        assert!(receive_x3dh(&bob.ik, &other_spk, &init, &alice.ed_pub).is_err());
+        // Truncated KEM ciphertext is an error, not a panic.
+        let mut t = init.clone();
+        t.ml_kem_ct.pop();
+        assert!(receive_x3dh(&bob.ik, &bob_spk, &t, &alice.ed_pub).is_err());
+    }
+
     #[test]
     fn test_x3dh_shared_secret_uniqueness() {
-        // First exchange.
-        let (bob_identity_1, bob_spk_1, bob_dk_1, bob_bundle_1) = make_bob_keys();
-        let mut alice_ik_bytes_1 = [0u8; 32];
-        rand::rng().fill(&mut alice_ik_bytes_1);
-        let alice_identity_1 = StaticSecret::from(alice_ik_bytes_1);
-        let (_init_msg_1, ss_1) = initiate_x3dh(&alice_identity_1, &bob_bundle_1)
-            .expect("first initiate_x3dh should succeed");
-        let _ = receive_x3dh(&bob_identity_1, &bob_spk_1, None, &bob_dk_1, &_init_msg_1)
-            .expect("first receive_x3dh should succeed");
+        let alice = party();
+        let bob = party();
+        let (bundle, _) = bundle_for(&bob);
+        let (_, a) = initiate_x3dh(&alice.ik, &alice.ed_seed, &bundle, &bob.ed_pub).unwrap();
+        let (_, b) = initiate_x3dh(&alice.ik, &alice.ed_seed, &bundle, &bob.ed_pub).unwrap();
+        assert_ne!(a, b);
+    }
 
-        // Second exchange with entirely fresh keys.
-        let (bob_identity_2, bob_spk_2, bob_dk_2, bob_bundle_2) = make_bob_keys();
-        let mut alice_ik_bytes_2 = [0u8; 32];
-        rand::rng().fill(&mut alice_ik_bytes_2);
-        let alice_identity_2 = StaticSecret::from(alice_ik_bytes_2);
-        let (_init_msg_2, ss_2) = initiate_x3dh(&alice_identity_2, &bob_bundle_2)
-            .expect("second initiate_x3dh should succeed");
-        let _ = receive_x3dh(&bob_identity_2, &bob_spk_2, None, &bob_dk_2, &_init_msg_2)
-            .expect("second receive_x3dh should succeed");
-
-        // The two shared secrets must differ.
-        assert_ne!(
-            ss_1, ss_2,
-            "independent X3DH exchanges must yield distinct shared secrets"
-        );
+    #[test]
+    fn test_identity_derivation_is_domain_separated() {
+        let p = party();
+        let derived = derive_x3dh_identity_secret(&p.ed_seed);
+        assert_ne!(derived, p.ed_seed);
+        assert_eq!(derived, derive_x3dh_identity_secret(&p.ed_seed));
     }
 }
