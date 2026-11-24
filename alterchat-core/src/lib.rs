@@ -2,22 +2,18 @@ pub mod crdt;
 pub mod crypto;
 pub mod dm;
 pub mod double_ratchet;
-pub mod ffi; // For Phase 5
 pub mod file_transfer;
 pub mod governance;
 pub mod identity;
 pub mod mailbox;
 pub mod network;
 pub mod onion;
-pub mod pluggable;
 pub mod plugin;
 pub mod pow;
-pub mod push;
-pub mod sharding;
 pub mod socks5;
 pub mod spam;
 pub mod transfer;
-pub mod x3dh; // For Phase 5
+pub mod x3dh;
 
 pub fn init_tracing() {
     let _ = tracing_subscriber::fmt()

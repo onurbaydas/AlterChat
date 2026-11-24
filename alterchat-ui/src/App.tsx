@@ -438,7 +438,7 @@ function App() {
   // Fetch PMs when opening a friend chat
   useEffect(() => {
     if (activeContext.type === 'friend' && !privateMessages[activeContext.id]) {
-      invoke<PrivateMessage[]>("get_private_messages", { peer_id: activeContext.id })
+      invoke<PrivateMessage[]>("get_private_messages", { peerId: activeContext.id })
         .then(msgs => setPrivateMessages(prev => ({...prev, [activeContext.id]: msgs})))
         .catch(console.error);
     }
@@ -507,7 +507,7 @@ function App() {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        invoke("send_webrtc_signal", { peer_id: targetPeer, signal: JSON.stringify(event.candidate) });
+        invoke("send_webrtc_signal", { peerId: targetPeer, signal: JSON.stringify(event.candidate) });
       }
     };
 
@@ -595,7 +595,7 @@ function App() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       const offerWithMeta = { type: offer.type, sdp: offer.sdp, callType: type };
-      await invoke("send_webrtc_signal", { peer_id: targetPeer, signal: JSON.stringify(offerWithMeta) });
+      await invoke("send_webrtc_signal", { peerId: targetPeer, signal: JSON.stringify(offerWithMeta) });
       return;
     }
 
@@ -638,7 +638,7 @@ function App() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       const offerWithMeta = { type: offer.type, sdp: offer.sdp, callType: type };
-      await invoke("send_webrtc_signal", { peer_id: targetPeer, signal: JSON.stringify(offerWithMeta) });
+      await invoke("send_webrtc_signal", { peerId: targetPeer, signal: JSON.stringify(offerWithMeta) });
     }
   };
 
@@ -659,7 +659,7 @@ function App() {
       await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await invoke("send_webrtc_signal", { peer_id: callData.sender, signal: JSON.stringify(answer) });
+      await invoke("send_webrtc_signal", { peerId: callData.sender, signal: JSON.stringify(answer) });
 
       setInCall(true);
       setIncomingCalls(prev => prev.filter(c => c.sender !== callData.sender));
@@ -709,11 +709,11 @@ function App() {
       const targetPeer = activeContext.id;
       const timestamp = Date.now();
         invoke("send_private_message", {
-          peer_id: activeContext.id,
+          peerId: activeContext.id,
           text: inputText,
-          sender_nick: myNick,
+          senderNick: myNick,
           ttl: selectedTtl,
-          use_onion: useOnion
+          useOnion: useOnion
         }).then(() => {
           const pm: PrivateMessage = { peer_id: targetPeer, sender_is_me: true, text: input, timestamp, ttl: effectiveTtl };
           setPrivateMessages(prev => {
@@ -728,7 +728,7 @@ function App() {
     if (!joinName.trim()) return;
     try {
       await invoke("join_channel", { name: joinName, password: joinPassword || null });
-      await invoke("save_group", { channel_name: joinName, password: joinPassword || null });
+      await invoke("save_group", { channelName: joinName, password: joinPassword || null });
 
       setSavedGroups(prev => [...prev.filter(g => g.channel_name !== joinName), { channel_name: joinName, password: joinPassword || undefined }]);
       setActiveContext({ type: 'group', id: joinName });
@@ -741,7 +741,7 @@ function App() {
     if (!friendIdInput.trim() || !friendNickInput.trim()) return;
     try {
       const pubkey = friendPubkeyInput.trim() || null;
-      await invoke("add_friend", { peer_id: friendIdInput, nickname: friendNickInput, offline_pubkey: pubkey });
+      await invoke("add_friend", { peerId: friendIdInput, nickname: friendNickInput, offlinePubkey: pubkey });
       setFriends(prev => [...prev.filter(f => f.peer_id !== friendIdInput), { peer_id: friendIdInput, nickname: friendNickInput }]);
       setShowAddFriend(false);
       setFriendIdInput(""); setFriendNickInput(""); setFriendPubkeyInput("");
@@ -825,11 +825,11 @@ function App() {
   const openContextSettings = async () => {
     try {
       if (activeContext.type === 'friend') {
-        const settings = await invoke<PeerSettings>("get_peer_settings", { peer_id: activeContext.id });
+        const settings = await invoke<PeerSettings>("get_peer_settings", { peerId: activeContext.id });
         setPeerSettings(settings);
         setRoomSettings(null);
       } else {
-        const settings = await invoke<RoomSettings>("get_room_settings", { channel_name: activeContext.id });
+        const settings = await invoke<RoomSettings>("get_room_settings", { channelName: activeContext.id });
         setRoomSettings(settings);
         setPeerSettings(null);
       }

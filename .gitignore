@@ -18,8 +18,6 @@ known_peers.json
 alterchat_storage/
 
 # Editor / OS / local tooling
-.claude/settings.local.json
 .idea/
 .DS_Store
 Thumbs.db
-/.claude/worktrees/

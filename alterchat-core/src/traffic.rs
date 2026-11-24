@@ -30,15 +30,23 @@ pub fn unpad_message(data: &[u8]) -> Option<Vec<u8>> {
     Some(data[4..4 + orig_len].to_vec())
 }
 
-/// Rastgele chaff (sahte) payload üretir — gerçek mesajlarla aynı yapıda görünür.
-/// Gerçek mesajlar: 4-byte big-endian length prefix + veri + padding.
-/// Chaff da aynı prefix yapısını kullanır; pasif gözlemci ayırt edemez.
+/// Random chaff payload with exactly the same size scheme as
+/// `pad_message`: `4 + BLOCK_SIZE * k` bytes, and a length prefix that is
+/// valid for that size. Real room payloads are encrypted, so on the wire
+/// (inside the Noise-encrypted transport) chaff and small real messages are
+/// the same size. Chaff fails to decrypt and is dropped by receivers.
 pub fn generate_chaff_payload() -> Vec<u8> {
-    let max_inner = (BLOCK_SIZE - 4) as u32;
-    let fake_inner_len = OsRng.next_u32() % max_inner;
-    let mut payload = Vec::with_capacity(BLOCK_SIZE);
+    // Most real chat messages fit in one block; occasionally use two.
+    let blocks = if OsRng.next_u32().is_multiple_of(8) {
+        2
+    } else {
+        1
+    };
+    let body_len = BLOCK_SIZE * blocks;
+    let fake_inner_len = OsRng.next_u32() % (body_len as u32);
+    let mut payload = Vec::with_capacity(4 + body_len);
     payload.extend_from_slice(&fake_inner_len.to_be_bytes());
-    let mut rest = vec![0u8; BLOCK_SIZE - 4];
+    let mut rest = vec![0u8; body_len];
     OsRng.fill_bytes(&mut rest);
     payload.extend_from_slice(&rest);
     payload
@@ -97,6 +105,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chaff_has_same_size_scheme_as_padded_messages() {
+        for _ in 0..200 {
+            let chaff = generate_chaff_payload();
+            assert_eq!(
+                (chaff.len() - 4) % BLOCK_SIZE,
+                0,
+                "chaff len {}",
+                chaff.len()
+            );
+            assert!(unpad_message(&chaff).is_some());
+        }
+        for len in [0usize, 1, 100, 507, 508, 511, 512, 900] {
+            let padded = pad_message(&vec![7u8; len]);
+            assert_eq!((padded.len() - 4) % BLOCK_SIZE, 0);
+        }
+    }
+
+    #[test]
     fn pad_unpad_round_trip() {
         let data = b"AlterChat test payload: hello world";
         let padded = pad_message(data);
@@ -122,12 +148,6 @@ mod tests {
         let mut bad = vec![0xFF, 0xFF, 0xFF, 0xFF]; // claims ~4GB
         bad.extend_from_slice(&[0u8; 10]);
         assert!(unpad_message(&bad).is_none());
-    }
-
-    #[test]
-    fn chaff_is_block_size() {
-        let chaff = generate_chaff_payload();
-        assert_eq!(chaff.len(), BLOCK_SIZE);
     }
 
     #[test]
