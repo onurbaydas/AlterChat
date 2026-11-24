@@ -8,13 +8,20 @@
 //! - `ALTERCHAT_DATA_DIR`        directory for the persistent node key (default: `./bootstrap-data`)
 //! - `ALTERCHAT_BOOTSTRAP_PORT`  TCP and UDP/QUIC listen port (default: `4001`)
 //! - `ALTERCHAT_LISTEN_IP`       listen IPv4 address (default: `0.0.0.0`)
+//! - `ALTERCHAT_RELAY`           `0` disables the circuit relay service (default: enabled)
+//!
+//! The node also acts as a libp2p circuit relay (v2) so peers behind NAT can
+//! reach each other and upgrade to a direct connection via DCUtR. Relayed
+//! traffic is end-to-end encrypted (Noise between the two peers); the relay
+//! only sees encrypted bytes and connection metadata. Circuits are limited
+//! in duration and volume to keep operator costs predictable.
 
 use libp2p::identity::Keypair;
 use libp2p::{
     PeerId, SwarmBuilder,
     futures::StreamExt,
-    identify, kad, noise, ping,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    identify, kad, noise, ping, relay,
+    swarm::{NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
     tcp, yamux,
 };
 use std::path::{Path, PathBuf};
@@ -25,6 +32,7 @@ struct BootstrapBehaviour {
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     identify: identify::Behaviour,
     ping: ping::Behaviour,
+    relay: Toggle<relay::Behaviour>,
 }
 
 const KEY_FILE: &str = "bootstrap_ed25519.key";
@@ -80,10 +88,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         keypair.public(),
     ));
 
+    let relay_enabled = env_or("ALTERCHAT_RELAY", "1") != "0";
+    let relay = relay_enabled.then(|| {
+        let cfg = relay::Config {
+            max_reservations: 512,
+            max_reservations_per_peer: 2,
+            reservation_duration: Duration::from_secs(60 * 60),
+            max_circuits: 128,
+            max_circuits_per_peer: 8,
+            // Chat traffic is small; generous enough for messages and the
+            // DCUtR hole-punch upgrade, small enough to deter bulk transfer.
+            max_circuit_duration: Duration::from_secs(10 * 60),
+            max_circuit_bytes: 2 * 1024 * 1024,
+            ..relay::Config::default()
+        };
+        relay::Behaviour::new(local_peer_id, cfg)
+    });
+
     let behaviour = BootstrapBehaviour {
         kademlia,
         identify,
         ping: ping::Behaviour::default(),
+        relay: Toggle::from(relay),
     };
 
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
@@ -101,6 +127,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     swarm.listen_on(format!("/ip4/{listen_ip}/tcp/{port}").parse()?)?;
     swarm.listen_on(format!("/ip4/{listen_ip}/udp/{port}/quic-v1").parse()?)?;
 
+    println!(
+        "Circuit relay: {}",
+        if relay_enabled { "enabled" } else { "disabled" }
+    );
     println!("Clients can use any of the listen addresses below as a bootstrap node.");
 
     loop {

@@ -64,6 +64,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Malformed CRDT room data from the network can no longer panic the event loop.
 - Fixed: Tauri CSP was null, now enforces strict policy (no unsafe-eval)
 - Deprecated: Legacy `PrivateMessage` and `RatchetPrivateMessage` DM paths
+- **Signed room messages (breaking wire format).** Each group-room message now
+  carries the author's protobuf-encoded libp2p Ed25519 public key and a
+  signature over `(room_id, msg_id, peer_id, nick, text, timestamp, ttl)`.
+  The receiver checks the signature against the current CRDT values and
+  requires `peer_id == PeerId(pubkey)`; failing messages are shown with an
+  "UNVERIFIED" marker instead of being trusted. Gossipsub stays anonymous.
+- **Incremental room sync.** Only the new Automerge change is published per
+  message (encrypted with the room key, padded), instead of the whole
+  document, which broke past gossipsub's 64 KiB limit. New
+  `RoomSyncRequest { room_tag, heads }` / `RoomSyncResponse { payload, more }`
+  request-response messages let new or out-of-date peers catch up in chunks
+  of at most 512 KiB (sent every 30 s, on connect, on join, and when a gossip
+  change arrives with missing dependencies). Inputs are size-bounded
+  (16 KiB text, 48 KiB per change, 64 heads) and malformed data is rejected
+  without touching the stored document. Old whole-document payloads are no
+  longer accepted on the wire; old local room files still load and their
+  messages are shown as unverified. Each message is one Automerge op (a
+  bincode record under `m/<msg_id>`), because Automerge 0.9's per-op cost
+  grows with document size.
 
 ### Fixed
 
@@ -111,6 +130,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SOCKS5 proxy transport (`alterchat-core/src/socks5.rs`). In SOCKS5 mode,
+  TCP multiaddrs (`/ip4`, `/ip6`, `/dns*`, `/onion3`) are dialed through the
+  configured proxy with remote DNS (host names are sent to the proxy, never
+  resolved locally) and optional `user:pass@host:port` authentication. The
+  mode is outbound only: no direct TCP, QUIC, listeners, mDNS, relay server,
+  or hole punching. Relay-client circuits still work on top of it. A missing,
+  invalid, or unreachable proxy fails session start with a clear error, and
+  there is no direct fallback.
+- Experimental I2P mode: the SOCKS5 transport pointed at the I2P router's SOCKS
+  proxy (default `127.0.0.1:4447`). It only dials `.i2p` host names; see the
+  README for its limitations.
+
+- **Sandboxed WASM plugin execution.** `PluginHost::run_plugin` now runs
+  plugins in a `wasmi` interpreter. Each run verifies the manifest signature
+  and WASM hash first. Limits: a fuel budget (10M instructions by default) and
+  a memory cap (16 pages by default, enforced on growth). There is no WASI and
+  no start function. Host functions are linked only for capabilities that are
+  both requested in the signed manifest and granted by the user. Any other
+  import is refused before instantiation. Every guest pointer and length is
+  bounds-checked and size-capped. A new `Notify` capability was added. The new
+  Tauri command `run_plugin` executes on a blocking thread, using the
+  enabled flag and grants stored in the DB. See `docs/PLUGINS.md`.
+- **File transfer works end to end.** The sender encrypts the file into
+  256 KiB AES-256-GCM chunks with a random per-file key, seals the key to the
+  friend's X25519 `offline_pubkey` and sends a `FileOffer`. The recipient
+  validates every field (id, size, chunk size/count, hash, sealed key;
+  filenames are sanitised against path separators, reserved Windows names,
+  bidi tricks and length), checks block list, `min_trust_file`, storage quota,
+  a max file size (default 100 MiB) and max concurrent transfers (default 3),
+  then asks the user (`file-offer` event, `accept_file_offer` /
+  `reject_file_offer` commands). Accepted transfers pull chunks with
+  `FileChunkRequest` (4 in flight, 4 attempts per chunk), verify each chunk,
+  reassemble, check the SHA-256 and save to the Downloads folder (fallback:
+  profile storage) without overwriting. Stalled, expired or failed transfers
+  are cleaned up. Progress and results are shown in the UI (`file-progress`,
+  `file-received`, `file-sent`, `file-transfer-failed`); received files open
+  via `open_received_file` (executables are only revealed in their folder).
+  New wire messages: `FileOffer`, `FileChunkRequest`, `FileFinished` and
+  their responses. The legacy whole-file `File` request is now refused.
+  `send_file` takes the file as a raw IPC body instead of a JSON array.
 - Atomic database migration framework with versioned schema
   (`CURRENT_DB_VERSION = 1`)
 - Onboarding wizard with password-protected profile creation and backup warning

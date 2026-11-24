@@ -6,6 +6,19 @@ discover other peers. Anyone can run one.
 
 ---
 
+## Quick Install (one command)
+
+On any Linux server with systemd (a small VPS is enough):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/onurbaydas/AlterChat/main/bootstrap/install.sh | sudo bash
+```
+
+The script installs the binary (verified release download, or a source build
+as fallback), creates a locked-down `alterchat` user, starts a hardened
+systemd service and prints the multiaddr to share. Open port `4001` TCP and
+UDP in your cloud firewall.
+
 ## How to Run an AlterChat Bootstrap Node
 
 The `alterchat-bootstrap` crate is a standalone binary that listens on a configurable port,
@@ -100,16 +113,11 @@ sudo journalctl -u alterchat-bootstrap -f
 
 | Variable | Default | Description |
 |---|---|---|
-| `ALTERCHAT_BOOTSTRAP_PORT` | `4001` | TCP/UDP port the node listens on |
-| `ALTERCHAT_DATA_DIR` | `/var/lib/alterchat-bootstrap` | Directory for the persistent keypair and state |
-| `RUST_LOG` | `info` | Log verbosity (`error`, `warn`, `info`, `debug`, `trace`) |
-| `ALTERCHAT_BOOTSTRAP` | _(empty)_ | Comma-separated multiaddrs to dial on startup (peer with known nodes) |
-
-The port can also be passed as the first positional argument:
-
-```bash
-alterchat-bootstrap 4001
-```
+| `ALTERCHAT_BOOTSTRAP_PORT` | `4001` | TCP and UDP/QUIC port the node listens on |
+| `ALTERCHAT_DATA_DIR` | `./bootstrap-data` (`/var/lib/alterchat-bootstrap` with `install.sh`, `/data` in Docker) | Directory for the persistent node key |
+| `ALTERCHAT_LISTEN_IP` | `0.0.0.0` | IPv4 address to listen on |
+| `ALTERCHAT_RELAY` | `1` | `0` disables the circuit relay service (NAT traversal for clients) |
+| `RUST_LOG` | `info` | Log verbosity |
 
 ---
 

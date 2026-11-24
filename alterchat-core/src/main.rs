@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let keypair = identity::load_or_generate_keypair("local_keypair.bin")?;
     let local_peer_id = libp2p::PeerId::from(keypair.public());
     let mut swarm =
-        network::create_swarm(keypair, network::NetworkPrivacyConfig::default()).await?;
+        network::create_swarm(keypair.clone(), network::NetworkPrivacyConfig::default()).await?;
 
     // CRDT Room initialization
     let mut room = crdt::Room::new("alterchat-global".to_string(), None);
@@ -28,10 +28,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             line = stdin.next_line() => {
                 if let Ok(Some(line)) = line {
                     // Add message to local CRDT room
-                    match room.add_message(&local_peer_id.to_string(), &local_peer_id.to_string(), &line, None) {
+                    match room.add_message(&keypair, &local_peer_id.to_string(), &line, None) {
                         Ok(bytes) => {
-                            // Broadcast the updated CRDT state
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
+                            // Broadcast only the new (signed, encrypted) change
+                            let padded = alterchat_core::traffic::pad_message(&bytes);
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), padded) {
                                 println!("Publish error: {e:?}");
                             } else {
                                 println!("Message added to CRDT and broadcasted.");
@@ -51,13 +52,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     message,
                 })) => {
                     // Merge incoming CRDT state
-                    if let Err(e) = room.merge(&message.data) {
+                    let payload = alterchat_core::traffic::unpad_message(&message.data)
+                        .unwrap_or_default();
+                    if let Err(e) = room.apply_remote(&payload) {
                         println!("Failed to merge CRDT state from {peer_id}: {e:?}");
                     } else {
                         println!("Merged CRDT state from {peer_id}. Last 3 messages in room:");
                         if let Ok(msgs) = room.get_messages() {
                             for msg in msgs.iter().skip(msgs.len().saturating_sub(3)) {
-                                println!("[{}] {}: {}", msg.timestamp, msg.sender, msg.text);
+                                let mark = if msg.verified { "" } else { " [UNVERIFIED]" };
+                                println!("[{}] {}{}: {}", msg.timestamp, msg.sender, mark, msg.text);
                             }
                         }
                     }

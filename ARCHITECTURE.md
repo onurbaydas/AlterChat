@@ -206,7 +206,8 @@ Supported transport paths:
 - QUIC preference path
 - Tor transport path through `libp2p-community-tor`
 - relay transport
-- I2P/SOCKS5 configuration fields, with full SOCKS5 routing still TODO
+- outbound-only SOCKS5 transport (`socks5.rs`, remote DNS, fail closed); I2P
+  mode reuses it against the router's SOCKS proxy for `.i2p` peers only
 
 Community bootstrap addresses are intentionally configured as optional. They
 help peers enter the DHT but should not become an authority layer.
@@ -249,10 +250,12 @@ The plugin module defines:
 - plugin capabilities
 - signed plugin manifests
 - policy checks
-- a host model for executing plugin-like code
+- a `wasmi`-based sandbox (`PluginHost`) with fuel and memory limits and
+  capability-gated host functions
 
-The database and Tauri commands can store/list plugin manifests. Running
-untrusted plugin code is security-sensitive and should require dedicated review.
+The database and Tauri commands can store, list and run plugins (see
+[docs/PLUGINS.md](docs/PLUGINS.md)). Running untrusted plugin code is
+security-sensitive and should require dedicated review.
 
 ## Tauri Backend
 
@@ -433,7 +436,8 @@ sequenceDiagram
 | File chunk encryption | Implemented | Local chunk store and quota path exist. |
 | WebRTC signaling | Implemented | NAT traversal depends on peer connectivity/relay support. |
 | Tor transport | Integrated | Misuse-sensitive; see vendored crate README. |
-| I2P/SOCKS5 | Partial | Config fields exist; full proxy dialing is TODO. |
+| SOCKS5 | Implemented | Outbound only, remote DNS, fail closed; trusts the proxy. |
+| I2P | Experimental | Via router SOCKS proxy; `.i2p` peers only, no inbound/SAM. |
 | Tauri CSP | Needs hardening | Current config has `csp: null`. |
 | Plugin host | Experimental | Treat untrusted plugins as unsafe until reviewed. |
 

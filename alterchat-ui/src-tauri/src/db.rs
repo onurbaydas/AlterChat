@@ -1422,6 +1422,29 @@ pub fn list_plugin_manifests(conn: &Connection) -> Result<Vec<(String, bool, Str
     Ok(plugins)
 }
 
+/// Most recent indexed messages of a room, oldest first:
+/// `(sender, text, timestamp)`. Used for the plugin `ReadMessages` snapshot.
+pub fn recent_room_messages(
+    conn: &Connection,
+    room_id: &str,
+    limit: i64,
+) -> Result<Vec<(String, String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT sender, text, timestamp FROM message_search
+         WHERE scope = 'room' AND room_id = ?1
+         ORDER BY CAST(timestamp AS INTEGER) DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![room_id, limit], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    let mut messages = Vec::new();
+    for row in rows {
+        messages.push(row?);
+    }
+    messages.reverse();
+    Ok(messages)
+}
+
 pub fn search_messages(
     conn: &Connection,
     query: &str,

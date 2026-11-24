@@ -4,6 +4,8 @@ export interface ChatMessage {
   text: string;
   timestamp: number;
   ttl?: number;
+  /** Signature valid and peer_id matches the signing key (group rooms). */
+  verified?: boolean;
 }
 export interface PrivateMessage {
   id?: number;

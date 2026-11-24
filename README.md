@@ -113,8 +113,18 @@ central message stores. AlterChat goes in the opposite direction:
 - Relay server/client and DCUtR behaviours are wired into the swarm.
 - Tor transport integration through the vendored `libp2p-community-tor` crate.
 - QUIC transport preference path.
-- I2P and SOCKS5 configuration fields exist, with I2P SOCKS proxy routing still
-  marked as TODO in code.
+- SOCKS5 proxy transport (outbound only, fail closed): TCP multiaddrs
+  (`/ip4`, `/ip6`, `/dns*`, `/onion3`) are dialed through a SOCKS5 proxy with
+  remote DNS resolution and optional username/password
+  (`user:pass@host:port`). No direct TCP, QUIC, local DNS, listeners, mDNS,
+  relay server, or hole punching in this mode; an unreachable proxy is an error,
+  never a fallback.
+- I2P mode (experimental): the same SOCKS5 transport pointed at the I2P
+  router's SOCKS proxy (default `127.0.0.1:4447`). It only dials `.i2p` host
+  names (`/dns/<name>.b32.i2p/tcp/<port>/p2p/<id>`), so it reaches only peers
+  that publish an I2P server tunnel to their libp2p TCP port. Clearnet peers,
+  normal bootstrap nodes, and inbound connections are not reachable in this
+  mode, and AlterChat does not create I2P tunnels itself (no SAM support).
 
 ### Governance and Trust
 
@@ -127,6 +137,10 @@ central message stores. AlterChat goes in the opposite direction:
 
 ### Files, Media, and Storage
 
+- Ask-before-accept peer-to-peer file transfer: per-file AES-256-GCM key
+  sealed to the friend's X25519 key, 256 KiB chunks pulled with a bounded
+  window and retries, SHA-256 verified, saved to Downloads without
+  overwriting (size, concurrency, trust and quota limits).
 - File manifests with 256 KiB chunking.
 - AES-256-GCM chunk encryption plus plaintext hash verification.
 - Storage quotas and retention settings.
@@ -138,7 +152,11 @@ central message stores. AlterChat goes in the opposite direction:
 ### Plugins and Extensibility
 
 - Plugin manifest and capability policy model in `alterchat-core`.
-- Tauri commands to save and list plugin manifests.
+- Sandboxed WASM plugin execution (wasmi interpreter): signature and hash
+  verification, fuel and memory limits, no WASI, and capability-gated host
+  functions. See [docs/PLUGINS.md](docs/PLUGINS.md) for the ABI.
+- Tauri commands to save, list and run plugins (`run_plugin` runs on a blocking
+  thread).
 - Plugin event request-response messages.
 - Plugin execution remains a sensitive extension surface and should be reviewed
   carefully before enabling untrusted code.
@@ -243,8 +261,9 @@ Important limitations:
 - No independent security audit has been completed.
 - The Tauri CSP is strict (`script-src 'self'`). It still allows
   `'unsafe-inline'` styles because the UI uses inline style objects.
-- Some privacy features are experimental or partially wired. I2P SOCKS routing,
-  full pluggable transport deployment, and production-grade relay policy need
+- Some privacy features are experimental or partially wired. I2P mode is
+  outbound-only to `.i2p` destinations, and full pluggable transport
+  deployment and production-grade relay policy need
   additional implementation review.
 - WebRTC media E2EE uses browser APIs that may degrade when peer keys are not
   available.
@@ -461,18 +480,17 @@ being trusted for high-risk communication.
 
 Suggested next milestones:
 
-- Done: DMs use X3DH + ML-KEM-768 against Ed25519-signed prekey bundles,
-  then the Double Ratchet. Either side can send first. Prekey secrets are
-  persisted in the encrypted DB.
-- Done: the offline DHT mailbox carries Double Ratchet messages in records
-  signed per (recipient, sender), accepted only from non-blocked friends and
-  deduplicated by message id.
-- Make bootstrap nodes validate mailbox records too (only AlterChat clients in
-  DHT server mode filter them today), and add one-time prekeys.
-- Send incremental CRDT changes and sign room messages. Whole-document
-  broadcasts hit gossipsub size limits, and senders are unauthenticated.
-- Finish I2P/SOCKS5 outbound routing (currently refused: fail closed).
-- Implement receiving of `File` requests and the WASM plugin sandbox.
+- DMs: bootstrap nodes should validate mailbox records too (only AlterChat
+  clients in DHT server mode filter them today); add one-time prekeys.
+- Rooms: any room-key holder can edit or delete CRDT entries (edits show as
+  unverified, deletes are not detected), and the orphan-change queue is
+  unbounded.
+- I2P mode still needs SAM-based inbound tunnels (and `.i2p` bootstrap nodes)
+  to be useful beyond dialing known `.i2p` peers.
+- Plugins: a UI for installing plugins and granting capabilities, and routing
+  of incoming `PluginEvent` requests to `run_plugin`.
+- File transfer: resume after restart, sending to offline peers, and a
+  longer request timeout for slow (Tor) links.
 - Ship community bootstrap addresses.
 - Add migration tests for SQLite schema evolution.
 - Add end-to-end integration tests for two local nodes.

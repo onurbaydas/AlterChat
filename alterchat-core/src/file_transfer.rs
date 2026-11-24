@@ -65,6 +65,28 @@ pub enum P2pRequest {
         challenge_id: String,
         solution: Vec<u8>,
     },
+    /// Sender -> recipient: announce a file (see `transfer` module docs).
+    FileOffer {
+        offer: crate::transfer::FileOffer,
+    },
+    /// Recipient -> sender: pull one encrypted chunk of an accepted offer.
+    FileChunkRequest {
+        transfer_id: String,
+        index: u64,
+    },
+    /// Either side: the transfer ended (rejected, cancelled, failed or done).
+    FileFinished {
+        transfer_id: String,
+        ok: bool,
+        reason: String,
+    },
+    /// Group room catch-up: "these are my heads, send what I am missing".
+    /// `room_tag` is `crdt::Room::sync_tag()` (hash of the room key), so the
+    /// room name is not revealed to peers that do not hold the key.
+    RoomSyncRequest {
+        room_tag: Vec<u8>,
+        heads: Vec<Vec<u8>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,5 +131,27 @@ pub enum P2pResponse {
     },
     PowAck {
         success: bool,
+    },
+    /// `success` means the offer was queued for the user's decision.
+    FileOfferAck {
+        transfer_id: String,
+        success: bool,
+        message: String,
+    },
+    /// `chunk` is `None` if the sender has no such transfer/index.
+    FileChunkData {
+        transfer_id: String,
+        index: u64,
+        chunk: Option<crate::storage::EncryptedChunk>,
+    },
+    FileFinishedAck {
+        success: bool,
+    },
+    /// `payload` is a padded, room-key-encrypted change bundle (empty when
+    /// nothing is missing or the room is unknown). `more` asks the requester
+    /// to send another request with its updated heads.
+    RoomSyncResponse {
+        payload: Vec<u8>,
+        more: bool,
     },
 }
