@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    env:
+      # Optional code-signing secrets. When they are not configured the
+      # release is still built, just unsigned.
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev patchelf
+
+      - name: Import Apple certificate
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" build.keychain
+          rm certificate.p12
+
+      - name: Import Windows certificate
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          $env:WINDOWS_CERTIFICATE | Out-File -Encoding ascii certificate.txt
+          certutil -decode certificate.txt certificate.pfx
+          certutil -importpfx -p "$env:WINDOWS_CERTIFICATE_PASSWORD" certificate.pfx
+          Remove-Item certificate.txt, certificate.pfx
+
+      - name: Install frontend dependencies
+        working-directory: alterchat-ui
+        run: npm ci
+
+      - name: Build and upload Tauri bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: alterchat-ui
+          tagName: ${{ github.ref_name }}
+          releaseName: "AlterChat ${{ github.ref_name }}"
+          releaseBody: "See CHANGELOG.md for details. Verify downloads with the published SHA256SUMS."
+          releaseDraft: true
+          prerelease: true
+
+  bootstrap:
+    name: Bootstrap node (linux x86_64)
+    runs-on: ubuntu-22.04
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p alterchat-bootstrap
+      - name: Package and checksum
+        run: |
+          mkdir dist
+          cp target/release/alterchat-bootstrap dist/alterchat-bootstrap-linux-x86_64
+          cd dist && sha256sum * > SHA256SUMS
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" dist/* --clobber

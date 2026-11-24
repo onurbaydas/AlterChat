@@ -1,0 +1,92 @@
+name: CI
+# Fuzzing (nightly, not part of CI):
+#   cargo +nightly fuzz run fuzz_p2p_request -- -max_total_time=60
+#   cargo +nightly fuzz run fuzz_onion_packet -- -max_total_time=60
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: alterchat-ui/package-lock.json
+      - run: npm ci
+        working-directory: alterchat-ui
+      - run: npm run build
+        working-directory: alterchat-ui
+      - name: npm audit
+        run: npm audit --audit-level=high
+        working-directory: alterchat-ui
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: alterchat-ui/package-lock.json
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      # tauri::generate_context!() requires the frontend bundle to exist.
+      - name: Build frontend bundle
+        working-directory: alterchat-ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-targets
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
