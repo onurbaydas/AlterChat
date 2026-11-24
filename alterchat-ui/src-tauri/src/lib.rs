@@ -21,6 +21,62 @@ struct ChatMessage {
     text: String,
     timestamp: i64,
     ttl: Option<i64>,
+    /// Author signature checked and peer_id bound to the signing key.
+    verified: bool,
+}
+
+fn room_history(room: &crdt::Room) -> Option<Vec<ChatMessage>> {
+    room.get_messages().ok().map(|msgs| {
+        msgs.into_iter()
+            .map(|msg| ChatMessage {
+                peer_id: msg.peer_id,
+                sender: msg.sender,
+                text: msg.text,
+                timestamp: msg.timestamp,
+                ttl: msg.ttl,
+                verified: msg.verified,
+            })
+            .collect()
+    })
+}
+
+/// Ask `peer` for room changes we are missing (incremental CRDT catch-up).
+fn request_room_sync(
+    swarm: &mut libp2p::Swarm<network::AlterChatBehaviour>,
+    room: &mut crdt::Room,
+    peer: &PeerId,
+) {
+    let mut heads = room.heads();
+    heads.truncate(crdt::MAX_SYNC_HEADS);
+    let _ = swarm.behaviour_mut().request_response.send_request(
+        peer,
+        alterchat_core::file_transfer::P2pRequest::RoomSyncRequest {
+            room_tag: room.sync_tag(),
+            heads,
+        },
+    );
+}
+
+/// Merge a padded, encrypted change bundle; persists and refreshes the UI
+/// only when something new became visible.
+fn apply_room_payload(
+    conn: &rusqlite::Connection,
+    app_handle: &tauri::AppHandle,
+    room: &mut crdt::Room,
+    room_name: &str,
+    padded: &[u8],
+) -> Option<crdt::ApplyOutcome> {
+    let payload = alterchat_core::traffic::unpad_message(padded)?;
+    let outcome = room.apply_remote(&payload).ok()?;
+    if outcome.changed {
+        if let Ok(merged) = room.save() {
+            let _ = db::save_room(conn, room_name, &merged);
+        }
+        if let Some(history) = room_history(room) {
+            let _ = app_handle.emit("chat-history", history);
+        }
+    }
+    Some(outcome)
 }
 
 #[derive(Clone)]
@@ -769,6 +825,10 @@ fn rejection_for_request(
             chunk: None,
         },
         P2pRequest::FileFinished { .. } => P2pResponse::FileFinishedAck { success: false },
+        P2pRequest::RoomSyncRequest { .. } => P2pResponse::RoomSyncResponse {
+            payload: Vec::new(),
+            more: false,
+        },
     }
 }
 
@@ -839,6 +899,9 @@ pub fn run() {
                 let mut x3dh_rotation_interval = tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 3600));
                 let mut transfers = file_xfer::FileTransfers::idle();
                 let mut file_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                // Heads announcement / catch-up for the active group room.
+                let mut room_sync_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                const ROOM_SYNC_FANOUT: usize = 8;
 
                 loop {
                     tokio::select! {
@@ -879,6 +942,14 @@ pub fn run() {
                             if let Some(s) = &mut swarm {
                                 let notices = transfers.tick(std::time::Instant::now(), &mut |p, r| s.behaviour_mut().request_response.send_request(&p, r));
                                 file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
+                            }
+                        }
+                        _ = room_sync_interval.tick() => {
+                            if let Some(ref mut s) = swarm {
+                                let peers = s.connected_peers().take(ROOM_SYNC_FANOUT).cloned().collect::<Vec<_>>();
+                                for peer in peers {
+                                    request_room_sync(s, &mut room, &peer);
+                                }
                             }
                         }
                         _ = chaff_interval.tick() => {
@@ -1010,8 +1081,7 @@ pub fn run() {
                                     }
                                 }
 
-                                if let Ok(msgs) = room.get_messages() {
-                                    let history: Vec<ChatMessage> = msgs.into_iter().map(|msg| ChatMessage { peer_id: msg.peer_id, sender: msg.sender, text: msg.text, timestamp: msg.timestamp, ttl: msg.ttl }).collect();
+                                if let Some(history) = room_history(&room) {
                                     let _ = app_handle.emit("chat-history", history);
                                 }
 
@@ -1092,10 +1162,17 @@ pub fn run() {
                                             let _ = app_handle.emit("room-action-denied", "write");
                                             continue;
                                         }
-                                        if let Ok(bytes) = room.add_message(&my_peer_id, &nick, &text, ttl) {
-                                            // Sabit boyut padding
+                                        let Some(keypair) = &current_keypair else { continue; };
+                                        match room.add_message(keypair, &nick, &text, ttl) {
+                                          Err(e) => {
+                                            let _ = app_handle.emit("room-send-failed", e);
+                                          }
+                                          Ok(bytes) => {
+                                            // Only the new signed change goes on the wire; padded.
                                             let padded = alterchat_core::traffic::pad_message(&bytes);
-                                            let _ = db::save_room(conn, &current_topic_name, &bytes);
+                                            if let Ok(snapshot) = room.save() {
+                                                let _ = db::save_room(conn, &current_topic_name, &snapshot);
+                                            }
                                             let timestamp = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap()
@@ -1107,14 +1184,19 @@ pub fn run() {
                                                 &text,
                                                 timestamp,
                                             );
-                                            let _ = s.behaviour_mut().gossipsub.publish(topic.clone(), padded);
+                                            if let Err(e) = s.behaviour_mut().gossipsub.publish(topic.clone(), padded) {
+                                                // e.g. no subscribed peers yet; they catch up via RoomSyncRequest.
+                                                eprintln!("[AlterChat] room publish failed: {e:?}");
+                                            }
                                             let _ = app_handle.emit("new-message", ChatMessage {
                                                 peer_id: my_peer_id.clone(),
                                                 sender: nick.clone(),
                                                 text: text.clone(),
                                                 timestamp,
                                                 ttl,
+                                                verified: true,
                                             });
+                                          }
                                         }
                                     }
                                 }
@@ -1140,9 +1222,12 @@ pub fn run() {
                                         let _ = s.behaviour_mut().gossipsub.subscribe(&topic);
                                         room = new_room;
 
-                                        if let Ok(msgs) = room.get_messages() {
-                                            let history: Vec<ChatMessage> = msgs.into_iter().map(|msg| ChatMessage { peer_id: msg.peer_id, sender: msg.sender, text: msg.text, timestamp: msg.timestamp, ttl: msg.ttl }).collect();
+                                        if let Some(history) = room_history(&room) {
                                             let _ = app_handle.emit("chat-history", history);
+                                        }
+                                        let peers = s.connected_peers().take(ROOM_SYNC_FANOUT).cloned().collect::<Vec<_>>();
+                                        for peer in peers {
+                                            request_room_sync(s, &mut room, &peer);
                                         }
                                     }
                                 }
@@ -1501,7 +1586,7 @@ pub fn run() {
                             }
                         }) => {
                             match event {
-                            SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source: _, message_id: _, message })) => {
+                            SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, message_id: _, message })) => {
                                 if let Some(conn) = &conn_opt {
                                     // Revokasyon topic'i mi?
                                     let topic_str = message.topic.to_string();
@@ -1521,15 +1606,11 @@ pub fn run() {
                                             let _ = app_handle.emit("invite-revoked-global", ann.invite_id.clone());
                                         }
                                     } else {
-                                        let payload = alterchat_core::traffic::unpad_message(&message.data)
-                                            .unwrap_or_else(|| message.data.clone());
-                                        if room.merge(&payload).is_ok() {
-                                            if let Ok(merged) = room.save() {
-                                                let _ = db::save_room(conn, &current_topic_name, &merged);
-                                            }
-                                            if let Ok(msgs) = room.get_messages() {
-                                                let history: Vec<ChatMessage> = msgs.into_iter().map(|msg| ChatMessage { peer_id: msg.peer_id, sender: msg.sender, text: msg.text, timestamp: msg.timestamp, ttl: msg.ttl }).collect();
-                                                let _ = app_handle.emit("chat-history", history);
+                                        let outcome = apply_room_payload(conn, &app_handle, &mut room, &current_topic_name, &message.data);
+                                        // Out-of-order/missed changes: ask the forwarder for the gap.
+                                        if outcome.is_some_and(|o| o.missing_deps) {
+                                            if let Some(s) = &mut swarm {
+                                                request_room_sync(s, &mut room, &propagation_source);
                                             }
                                         }
                                     }
@@ -1948,13 +2029,50 @@ pub fn run() {
                                                         alterchat_core::file_transfer::P2pResponse::PowAck { success: true }
                                                     );
                                                 }
+                                                alterchat_core::file_transfer::P2pRequest::RoomSyncRequest { room_tag, heads } => {
+                                                    // Unknown room or bad request -> empty response.
+                                                    let mut response = alterchat_core::file_transfer::P2pResponse::RoomSyncResponse { payload: Vec::new(), more: false };
+                                                    if room_tag == room.sync_tag() {
+                                                        if let Ok(chunk) = room.sync_response(&heads) {
+                                                            let payload = if chunk.payload.is_empty() {
+                                                                Vec::new()
+                                                            } else {
+                                                                alterchat_core::traffic::pad_message(&chunk.payload)
+                                                            };
+                                                            response = alterchat_core::file_transfer::P2pResponse::RoomSyncResponse { payload, more: chunk.more };
+                                                            // The requester has changes we lack: pull them too.
+                                                            if chunk.requester_ahead {
+                                                                request_room_sync(s, &mut room, &peer);
+                                                            }
+                                                        }
+                                                    }
+                                                    let _ = s.behaviour_mut().request_response.send_response(channel, response);
+                                                }
                                             }
                                         }
                                     }
                                     libp2p::request_response::Message::Response { request_id, response } => {
-                                        if let Some(s) = &mut swarm {
-                                            let notices = transfers.on_response(peer, request_id, response, &mut |p, r| s.behaviour_mut().request_response.send_request(&p, r));
-                                            file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
+                                        match response {
+                                            alterchat_core::file_transfer::P2pResponse::RoomSyncResponse { payload, more } => {
+                                                    // Padded size is bounded by MAX_PAYLOAD_BYTES plus one padding block.
+                                                    if !payload.is_empty() && payload.len() <= crdt::MAX_PAYLOAD_BYTES + 1024 {
+                                                        if let Some(conn) = &conn_opt {
+                                                            let outcome = apply_room_payload(conn, &app_handle, &mut room, &current_topic_name, &payload);
+                                                            // Continue chunked catch-up only while making progress.
+                                                            if more && outcome.is_some_and(|o| o.changed) {
+                                                                if let Some(s) = &mut swarm {
+                                                                    request_room_sync(s, &mut room, &peer);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                            }
+                                            other => {
+                                                if let Some(s) = &mut swarm {
+                                                    let notices = transfers.on_response(peer, request_id, other, &mut |p, r| s.behaviour_mut().request_response.send_request(&p, r));
+                                                    file_xfer::dispatch(&app_handle, current_db_path.as_deref(), notices);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2054,6 +2172,11 @@ pub fn run() {
                                             }
                                         }
                                     }
+                                }
+                            }
+                            SwarmEvent::ConnectionEstablished { peer_id, num_established, .. } if num_established.get() == 1 => {
+                                if let Some(s) = &mut swarm {
+                                    request_room_sync(s, &mut room, &peer_id);
                                 }
                             }
                             _ => {}

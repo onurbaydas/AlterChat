@@ -83,6 +83,13 @@ pub enum P2pRequest {
         ok: bool,
         reason: String,
     },
+    /// Group room catch-up: "these are my heads, send what I am missing".
+    /// `room_tag` is `crdt::Room::sync_tag()` (hash of the room key), so the
+    /// room name is not revealed to peers that do not hold the key.
+    RoomSyncRequest {
+        room_tag: Vec<u8>,
+        heads: Vec<Vec<u8>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,5 +141,12 @@ pub enum P2pResponse {
     },
     FileFinishedAck {
         success: bool,
+    },
+    /// `payload` is a padded, room-key-encrypted change bundle (empty when
+    /// nothing is missing or the room is unknown). `more` asks the requester
+    /// to send another request with its updated heads.
+    RoomSyncResponse {
+        payload: Vec<u8>,
+        more: bool,
     },
 }

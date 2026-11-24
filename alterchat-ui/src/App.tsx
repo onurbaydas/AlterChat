@@ -1424,6 +1424,11 @@ function App() {
               <div className="msg-content">
                 <div className="msg-header">
                   <span className="msg-author">[{msg.sender === "You" ? "sys" : "usr"}] {msg.sender}</span>
+                  {(msg as any).verified === false && (
+                    <span className="msg-unverified" style={{ color: '#ff4081', fontSize: 11, marginLeft: 6 }} title="Signature missing or invalid: sender identity and text are not authenticated">
+                      ⚠ UNVERIFIED
+                    </span>
+                  )}
                   {(msg as any).peer_id && msg.sender !== "You" && (
                     <span className="msg-trust" style={{ 
                       color: (peerTrust[(msg as any).peer_id] || 0) >= 10 ? '#00f0ff' : 

@@ -487,8 +487,9 @@ Suggested next milestones:
   send first.
 - Authenticate the offline DHT mailbox (sender signatures, friend-only, dedup)
   or drop it, since it bypasses the ratchet's forward secrecy.
-- Send incremental CRDT changes and sign room messages. Whole-document
-  broadcasts hit gossipsub size limits, and senders are unauthenticated.
+- Room messages are now signed and synced incrementally. Still open: any
+  room-key holder can edit or delete CRDT entries (edits show as unverified,
+  deletes are not detected), and the orphan-change queue is unbounded.
 - SOCKS5 outbound routing is done; I2P mode still needs SAM-based inbound
   tunnels (and `.i2p` bootstrap nodes) to be useful beyond dialing known
   `.i2p` peers.
