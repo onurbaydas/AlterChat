@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  alterchat-bootstrap:
+    build:
+      context: ..
+      dockerfile: alterchat-bootstrap/Dockerfile
+    image: alterchat-bootstrap:latest
+    container_name: alterchat-bootstrap
+    restart: unless-stopped
+    ports:
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+    volumes:
+      - /var/lib/alterchat-bootstrap:/data
+    environment:
+      - RUST_LOG=info
+      - ALTERCHAT_DATA_DIR=/data

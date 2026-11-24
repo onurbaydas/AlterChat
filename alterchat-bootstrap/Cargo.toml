@@ -1,0 +1,12 @@
+[package]
+name = "alterchat-bootstrap"
+version = "0.1.0"
+edition = "2024"
+description = "Headless Kademlia bootstrap node for the AlterChat peer-to-peer network"
+license = "AGPL-3.0-only"
+repository = "https://github.com/onurbaydas/AlterChat"
+publish = false
+
+[dependencies]
+libp2p = { version = "0.56.0", features = ["tcp", "quic", "noise", "yamux", "kad", "tokio", "macros", "ed25519", "identify", "ping"] }
+tokio = { version = "1.52.3", features = ["full"] }
