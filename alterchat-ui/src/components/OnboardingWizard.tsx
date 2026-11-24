@@ -1,5 +1,7 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import bunkerRat from "../assets/bunker-rat.svg";
+import { detectLang, saveLang, strings, type Lang } from "../i18n";
 
 interface OnboardingWizardProps {
   onComplete: () => void;
@@ -8,11 +10,24 @@ interface OnboardingWizardProps {
 type Mode = "choose" | "create" | "open";
 type CreateStep = 1 | 2 | 3;
 
+const C = {
+  green: "var(--accent-green)",
+  amber: "var(--accent-amber)",
+  red: "var(--accent-red)",
+  muted: "var(--text-muted)",
+  dim: "var(--text-mono)",
+  text: "var(--text-main)",
+  screen: "#070a06",
+  steel: "#3e4034",
+};
+
 const stepDot = (active: boolean, done: boolean): React.CSSProperties => ({
-  width: 8,
-  height: 8,
+  width: 10,
+  height: 10,
   borderRadius: "50%",
-  background: done ? "#00f0ff" : active ? "#00cc99" : "#1a2a3a",
+  background: done ? C.green : active ? C.amber : "#2a2c24",
+  boxShadow: done || active ? "0 0 8px currentColor" : "none",
+  color: done ? C.green : C.amber,
   transition: "background 0.2s",
 });
 
@@ -20,456 +35,455 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "#050a0f",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    zIndex: 9999,
-    fontFamily: "'Courier New', Courier, monospace",
+    zIndex: 1000,
+    overflowY: "auto",
+    padding: 24,
   },
   card: {
-    background: "#0d1117",
-    border: "1px solid #1a3a2a",
-    borderRadius: 8,
-    padding: "40px 48px",
-    width: 460,
-    maxWidth: "90vw",
-    boxShadow: "0 0 40px rgba(0, 240, 255, 0.08)",
+    width: "100%",
+    maxWidth: 520,
+    padding: "28px 32px 24px",
+    background: "rgba(20, 22, 18, 0.94)",
+    border: `2px solid ${C.steel}`,
+    borderRadius: 14,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.8), inset 0 0 40px rgba(0,0,0,0.5)",
+    position: "relative",
+  },
+  stripe: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 8,
+    background: "var(--hazard-stripe)",
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  scene: {
+    width: "100%",
+    borderRadius: 10,
+    border: `1px solid ${C.steel}`,
+    display: "block",
+    marginBottom: 18,
   },
   logo: {
-    fontSize: 28,
-    color: "#00f0ff",
-    letterSpacing: 4,
+    fontFamily: "var(--font-display)",
+    fontSize: 46,
+    lineHeight: 1,
+    letterSpacing: 6,
+    color: C.amber,
     textAlign: "center",
-    marginBottom: 4,
+    textShadow: "0 0 14px rgba(255,176,0,0.45)",
   },
   subtitle: {
-    fontSize: 11,
-    color: "#445",
+    fontFamily: "var(--font-display)",
+    fontSize: 18,
+    letterSpacing: 3,
+    color: C.green,
     textAlign: "center",
-    marginBottom: 32,
+    marginBottom: 14,
+    textShadow: "0 0 8px var(--accent-cyan-glow)",
+  },
+  intro: {
+    fontSize: 13,
+    color: C.muted,
+    textAlign: "center",
+    marginBottom: 20,
+    lineHeight: 1.6,
+  },
+  column: { display: "flex", flexDirection: "column", gap: 10 },
+  heading: {
+    fontFamily: "var(--font-display)",
+    fontSize: 26,
     letterSpacing: 2,
+    color: C.amber,
+    marginBottom: 14,
   },
-  modeButtonRow: {
-    display: "flex",
-    gap: 12,
-    marginTop: 8,
-  },
-  modeButton: {
-    flex: 1,
-    padding: "14px 8px",
-    background: "transparent",
-    border: "1px solid #1a3a2a",
-    borderRadius: 6,
-    color: "#aaa",
-    fontSize: 13,
-    cursor: "pointer",
-    letterSpacing: 1,
-  },
-  modeButtonPrimary: {
-    flex: 1,
-    padding: "14px 8px",
-    background: "transparent",
-    border: "1px solid #00f0ff",
-    borderRadius: 6,
-    color: "#00f0ff",
-    fontSize: 13,
-    cursor: "pointer",
-    letterSpacing: 1,
-  },
-  label: {
-    display: "block",
-    fontSize: 11,
-    color: "#667",
-    marginBottom: 4,
-    letterSpacing: 1,
-    textTransform: "uppercase" as const,
-  },
+  label: { display: "block", fontSize: 12, color: C.muted, marginBottom: 6 },
   input: {
     width: "100%",
     padding: "10px 12px",
-    background: "#080d12",
-    border: "1px solid #1a2a3a",
-    borderRadius: 4,
-    color: "#ccc",
-    fontSize: 13,
+    background: C.screen,
+    border: `1px solid ${C.steel}`,
+    borderRadius: 6,
+    color: C.green,
+    fontSize: 14,
     outline: "none",
-    boxSizing: "border-box" as const,
-    marginBottom: 16,
+    marginBottom: 14,
     fontFamily: "inherit",
+    caretColor: C.green,
   },
-  inputError: {
-    width: "100%",
-    padding: "10px 12px",
-    background: "#080d12",
-    border: "1px solid #cc3333",
-    borderRadius: 4,
-    color: "#ccc",
-    fontSize: 13,
-    outline: "none",
-    boxSizing: "border-box" as const,
-    marginBottom: 4,
-    fontFamily: "inherit",
-  },
-  errorText: {
-    fontSize: 11,
-    color: "#cc4444",
-    marginBottom: 12,
-  },
+  errorText: { color: C.red, fontSize: 12, marginTop: -6, marginBottom: 12 },
   primaryBtn: {
     width: "100%",
-    padding: "12px",
+    padding: "11px 0",
+    background: "linear-gradient(180deg, #ffbf33, #c98a00)",
+    border: "1px solid #7a5600",
+    borderRadius: 6,
+    color: "#1a1305",
+    fontFamily: "var(--font-display)",
+    fontSize: 22,
+    letterSpacing: 3,
+    cursor: "pointer",
+  },
+  secondaryBtn: {
+    width: "100%",
+    padding: "11px 0",
+    background: "linear-gradient(180deg, #3a3c33, #24261f)",
+    border: "1px solid #55574a",
+    borderRadius: 6,
+    color: C.text,
+    fontFamily: "var(--font-display)",
+    fontSize: 22,
+    letterSpacing: 2,
+    cursor: "pointer",
+  },
+  ghostBtn: {
+    width: "100%",
+    padding: "9px 0",
     background: "transparent",
-    border: "1px solid #00f0ff",
-    borderRadius: 4,
-    color: "#00f0ff",
+    border: `1px dashed ${C.steel}`,
+    borderRadius: 6,
+    color: C.muted,
+    fontFamily: "inherit",
     fontSize: 13,
     cursor: "pointer",
-    letterSpacing: 2,
-    marginTop: 4,
-    fontFamily: "inherit",
-  },
-  primaryBtnDisabled: {
-    width: "100%",
-    padding: "12px",
-    background: "transparent",
-    border: "1px solid #1a3a3a",
-    borderRadius: 4,
-    color: "#334",
-    fontSize: 13,
-    cursor: "not-allowed",
-    letterSpacing: 2,
-    marginTop: 4,
-    fontFamily: "inherit",
   },
   backLink: {
     background: "none",
     border: "none",
-    color: "#445",
-    fontSize: 11,
+    color: C.dim,
+    fontSize: 12,
     cursor: "pointer",
-    padding: 0,
-    marginTop: 16,
+    marginTop: 14,
     display: "block",
-    textAlign: "center" as const,
-    letterSpacing: 1,
-  },
-  stepIndicator: {
-    display: "flex",
-    justifyContent: "center",
-    gap: 8,
-    marginBottom: 28,
-  },
-  heading: {
-    fontSize: 15,
-    color: "#ccc",
-    marginBottom: 20,
-    letterSpacing: 1,
+    width: "100%",
+    textAlign: "center",
+    fontFamily: "inherit",
   },
   warningBox: {
-    background: "#0d1a0d",
-    border: "1px solid #1a4a2a",
-    borderRadius: 4,
+    background: "rgba(201,154,30,0.08)",
+    border: "1px solid rgba(201,154,30,0.45)",
+    borderRadius: 8,
     padding: "14px 16px",
-    fontSize: 12,
-    color: "#99bb99",
+    fontSize: 13,
+    color: C.text,
     lineHeight: 1.7,
-    marginBottom: 20,
-  },
-  warningIcon: {
-    color: "#ffcc44",
-    marginRight: 4,
+    marginBottom: 16,
   },
   checkLabel: {
     display: "flex",
-    alignItems: "flex-start",
     gap: 10,
-    fontSize: 12,
-    color: "#aaa",
+    alignItems: "flex-start",
+    fontSize: 13,
+    color: C.text,
     cursor: "pointer",
-    marginBottom: 20,
+    marginBottom: 18,
+  },
+  inviteBox: {
+    background: C.screen,
+    border: "1px solid rgba(124,255,107,0.3)",
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 12,
+  },
+  inviteText: {
+    fontSize: 11,
+    color: C.green,
+    wordBreak: "break-all",
     lineHeight: 1.5,
-  },
-  successBox: {
-    background: "#080d0d",
-    border: "1px solid #1a4a4a",
-    borderRadius: 4,
-    padding: "14px 16px",
-    marginBottom: 20,
-  },
-  successTitle: {
-    fontSize: 11,
-    color: "#00cc99",
-    letterSpacing: 2,
-    marginBottom: 8,
-    textTransform: "uppercase" as const,
-  },
-  peerIdText: {
-    fontSize: 11,
-    color: "#00f0ff",
-    wordBreak: "break-all" as const,
-    lineHeight: 1.6,
-    fontFamily: "inherit",
+    marginBottom: 10,
+    textShadow: "0 0 6px rgba(124,255,107,0.35)",
+    userSelect: "text",
   },
   copyBtn: {
+    padding: "6px 14px",
     background: "transparent",
-    border: "1px solid #1a4a4a",
+    border: `1px solid ${C.green}`,
     borderRadius: 4,
-    color: "#00cc99",
-    fontSize: 11,
-    cursor: "pointer",
-    padding: "4px 10px",
-    marginTop: 8,
+    color: C.green,
     fontFamily: "inherit",
-    letterSpacing: 1,
+    fontSize: 12,
+    cursor: "pointer",
+  },
+  langBtn: {
+    position: "absolute",
+    top: 16,
+    right: 16,
+    background: "transparent",
+    border: `1px solid ${C.steel}`,
+    borderRadius: 4,
+    color: C.muted,
+    fontSize: 11,
+    padding: "3px 8px",
+    cursor: "pointer",
+    fontFamily: "inherit",
   },
 };
 
+async function fetchInviteLink(): Promise<string> {
+  // The session starts asynchronously right after login; retry briefly.
+  for (let i = 0; i < 20; i++) {
+    try {
+      return await invoke<string>("get_peer_uri");
+    } catch {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  return "";
+}
+
+async function saveNickname(nick: string) {
+  try {
+    const config = await invoke<Record<string, unknown>>("get_full_config");
+    await invoke("save_full_config", { config: { ...config, nick } });
+  } catch (err) {
+    console.error("could not save nickname", err);
+  }
+}
+
 export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
+  const [lang, setLang] = useState<Lang>(detectLang());
+  const t = strings(lang);
   const [mode, setMode] = useState<Mode>("choose");
 
-  // Create profile state
   const [createStep, setCreateStep] = useState<CreateStep>(1);
-  const [profileName, setProfileName] = useState("");
+  const [nickname, setNickname] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [createError, setCreateError] = useState("");
   const [backupAcknowledged, setBackupAcknowledged] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
-  const [createdPeerId, setCreatedPeerId] = useState("");
-  const [copyLabel, setCopyLabel] = useState("Copy");
+  const [busy, setBusy] = useState(false);
+  const [inviteLink, setInviteLink] = useState("");
+  const [copyLabel, setCopyLabel] = useState<string>(t.copy);
 
-  // Open profile state
   const [openPassword, setOpenPassword] = useState("");
   const [openError, setOpenError] = useState("");
-  const [isUnlocking, setIsUnlocking] = useState(false);
 
-  // --- Create profile handlers ---
+  const toggleLang = () => {
+    const next: Lang = lang === "tr" ? "en" : "tr";
+    setLang(next);
+    saveLang(next);
+    setCopyLabel(strings(next).copy);
+  };
+
+  const resetCreate = () => {
+    setMode("choose");
+    setCreateStep(1);
+    setCreateError("");
+    setNickname("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setBackupAcknowledged(false);
+  };
+
   const handleStep1Next = () => {
     setCreateError("");
-    if (!profileName.trim()) {
-      setCreateError("Profile name is required.");
-      return;
-    }
-    if (newPassword.length < 8) {
-      setCreateError("Password must be at least 8 characters.");
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setCreateError("Passwords do not match.");
-      return;
-    }
+    if (!nickname.trim()) return setCreateError(t.nickRequired);
+    if (newPassword.length < 8) return setCreateError(t.pwShort);
+    if (newPassword !== confirmPassword) return setCreateError(t.pwMismatch);
     setCreateStep(2);
   };
 
-  const handleStep2Next = async () => {
+  const handleCreate = async () => {
     if (!backupAcknowledged) return;
-    setIsCreating(true);
+    setBusy(true);
     setCreateError("");
     try {
-      // login_profile with a new password creates the keypair if it does not exist
-      const peerId = await invoke<string>("login_profile", {
-        password: newPassword,
-        amnesic: false,
-        create: true,
-      });
-      setCreatedPeerId(peerId);
+      await invoke<string>("login_profile", { password: newPassword, amnesic: false, create: true });
+      await saveNickname(nickname.trim());
+      setInviteLink(await fetchInviteLink());
       setCreateStep(3);
     } catch (err) {
-      setCreateError("Failed to create profile: " + String(err));
+      setCreateError(t.failed + String(err));
       setCreateStep(1);
     } finally {
-      setIsCreating(false);
+      setBusy(false);
     }
   };
 
-  const handleCopyPeerId = async () => {
+  const handleAmnesic = async () => {
+    setBusy(true);
     try {
-      await navigator.clipboard.writeText(createdPeerId);
-      setCopyLabel("Copied!");
-      setTimeout(() => setCopyLabel("Copy"), 2000);
-    } catch {
-      setCopyLabel("Copy failed");
-    }
-  };
-
-  // --- Open profile handler ---
-  const handleUnlock = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!openPassword.trim()) return;
-    setIsUnlocking(true);
-    setOpenError("");
-    try {
-      await invoke<string>("login_profile", {
-        password: openPassword,
-        amnesic: false,
-      });
+      await invoke<string>("login_profile", { password: "", amnesic: true });
       onComplete();
     } catch (err) {
-      setOpenError("Wrong password or corrupted vault: " + String(err));
+      alert(t.failed + String(err));
     } finally {
-      setIsUnlocking(false);
+      setBusy(false);
     }
   };
 
-  // --- Render ---
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      setCopyLabel(t.copied);
+      setTimeout(() => setCopyLabel(t.copy), 2000);
+    } catch {
+      setCopyLabel(t.copyFailed);
+    }
+  };
+
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!openPassword) return;
+    setBusy(true);
+    setOpenError("");
+    try {
+      await invoke<string>("login_profile", { password: openPassword, amnesic: false, create: false });
+      onComplete();
+    } catch (err) {
+      const msg = String(err);
+      setOpenError(msg.includes("No profile matches") ? t.wrongPw : t.failed + msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={styles.overlay}>
       <div style={styles.card}>
+        <div style={styles.stripe} />
+        <button style={styles.langBtn} onClick={toggleLang}>{t.lang}</button>
+
+        {mode === "choose" && (
+          <img src={bunkerRat} alt="" style={styles.scene} />
+        )}
         <div style={styles.logo}>ALTERCHAT</div>
-        <div style={styles.subtitle}>LOCAL-FIRST ENCRYPTED MESH</div>
+        <div style={styles.subtitle}>{t.tagline}</div>
 
         {mode === "choose" && (
           <>
-            <div style={{ fontSize: 13, color: "#556", textAlign: "center", marginBottom: 24, lineHeight: 1.6 }}>
-              No active profile detected. Create a new identity or unlock an existing one.
-            </div>
-            <div style={styles.modeButtonRow}>
-              <button style={styles.modeButtonPrimary} onClick={() => setMode("create")}>
-                + New Profile
+            <div style={styles.intro}>{t.intro}</div>
+            <div style={styles.column}>
+              <button style={styles.primaryBtn} onClick={() => setMode("create")} disabled={busy}>
+                {t.newProfile}
               </button>
-              <button style={styles.modeButton} onClick={() => setMode("open")}>
-                Unlock Existing
+              <button style={styles.secondaryBtn} onClick={() => setMode("open")} disabled={busy}>
+                {t.unlock}
               </button>
+              <button style={styles.ghostBtn} onClick={handleAmnesic} disabled={busy} title={t.amnesicHint}>
+                {t.amnesic}
+              </button>
+              <div style={{ fontSize: 11, color: C.dim, textAlign: "center" }}>{t.amnesicHint}</div>
             </div>
           </>
         )}
 
         {mode === "create" && (
           <>
-            <div style={styles.stepIndicator}>
+            <div style={{ display: "flex", justifyContent: "center", gap: 10, margin: "8px 0 18px" }}>
               {([1, 2, 3] as CreateStep[]).map((s) => (
-                <div
-                  key={s}
-                  style={stepDot(createStep === s, createStep > s)}
-                />
+                <div key={s} style={stepDot(createStep === s, createStep > s)} />
               ))}
             </div>
 
             {createStep === 1 && (
               <>
-                <div style={styles.heading}>Create New Profile</div>
-                <label style={styles.label}>Profile Name</label>
+                <label style={styles.label}>{t.nickname}</label>
                 <input
-                  style={newPassword && profileName === "" ? styles.inputError : styles.input}
-                  type="text"
-                  placeholder="e.g. main, work, anon..."
-                  value={profileName}
-                  onChange={(e) => setProfileName(e.target.value)}
+                  style={styles.input}
+                  placeholder={t.nicknamePh}
+                  value={nickname}
+                  maxLength={32}
+                  onChange={(e) => setNickname(e.target.value)}
                   autoFocus
                 />
-                <label style={styles.label}>Password</label>
+                <label style={styles.label}>{t.password}</label>
                 <input
                   style={styles.input}
                   type="password"
-                  placeholder="Minimum 8 characters"
+                  placeholder={t.passwordPh}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                 />
-                <label style={styles.label}>Confirm Password</label>
+                <label style={styles.label}>{t.confirm}</label>
                 <input
-                  style={createError.includes("match") ? styles.inputError : styles.input}
+                  style={styles.input}
                   type="password"
-                  placeholder="Repeat password"
+                  placeholder={t.confirmPh}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") handleStep1Next(); }}
                 />
                 {createError && <div style={styles.errorText}>{createError}</div>}
-                <button style={styles.primaryBtn} onClick={handleStep1Next}>
-                  CONTINUE
-                </button>
+                <button style={styles.primaryBtn} onClick={handleStep1Next}>{t.continue}</button>
               </>
             )}
 
             {createStep === 2 && (
               <>
-                <div style={styles.heading}>Backup Warning</div>
+                <div style={styles.heading}>⚠ {t.backupTitle}</div>
                 <div style={styles.warningBox}>
-                  <span style={styles.warningIcon}>!</span>
-                  If you lose your password, your messages and identity{" "}
-                  <strong style={{ color: "#ffcc44" }}>cannot be recovered</strong>.
-                  There is no reset option, no recovery email, and no central authority.
+                  {t.backupBody1} <strong style={{ color: C.amber }}>{t.backupBodyStrong}</strong>.{" "}
+                  {t.backupBody2}
                   <br /><br />
-                  Write down your password and keep it in a safe place before continuing.
+                  {t.backupBody3}
                 </div>
                 <label style={styles.checkLabel}>
                   <input
                     type="checkbox"
                     checked={backupAcknowledged}
                     onChange={(e) => setBackupAcknowledged(e.target.checked)}
-                    style={{ marginTop: 2, flexShrink: 0 }}
+                    style={{ marginTop: 3, flexShrink: 0 }}
                   />
-                  I understand and have saved my password in a safe place.
+                  {t.backupAck}
                 </label>
                 {createError && <div style={styles.errorText}>{createError}</div>}
                 <button
-                  style={backupAcknowledged && !isCreating ? styles.primaryBtn : styles.primaryBtnDisabled}
-                  onClick={handleStep2Next}
-                  disabled={!backupAcknowledged || isCreating}
+                  style={{ ...styles.primaryBtn, opacity: backupAcknowledged && !busy ? 1 : 0.45 }}
+                  onClick={handleCreate}
+                  disabled={!backupAcknowledged || busy}
                 >
-                  {isCreating ? "CREATING..." : "CREATE PROFILE"}
+                  {busy ? t.creating : t.create}
                 </button>
-                <button style={styles.backLink} onClick={() => setCreateStep(1)}>
-                  back
-                </button>
+                <button style={styles.backLink} onClick={() => setCreateStep(1)}>{t.back}</button>
               </>
             )}
 
             {createStep === 3 && (
               <>
-                <div style={styles.heading}>Profile Created</div>
-                <div style={{ fontSize: 12, color: "#667", marginBottom: 16, lineHeight: 1.6 }}>
-                  Your cryptographic identity has been generated and encrypted with your password.
+                <div style={styles.heading}>🐀 {t.created}</div>
+                <div style={{ ...styles.intro, textAlign: "left" }}>{t.createdBody}</div>
+                <div style={styles.inviteBox}>
+                  <div style={styles.label}>{t.yourInvite}</div>
+                  <div style={styles.inviteText}>{inviteLink || "…"}</div>
+                  <button style={styles.copyBtn} onClick={handleCopy} disabled={!inviteLink}>{copyLabel}</button>
                 </div>
-                <div style={styles.successBox}>
-                  <div style={styles.successTitle}>Your Peer ID</div>
-                  <div style={styles.peerIdText}>{createdPeerId}</div>
-                  <button style={styles.copyBtn} onClick={handleCopyPeerId}>
-                    {copyLabel}
-                  </button>
-                </div>
-                <div style={{ fontSize: 11, color: "#445", marginBottom: 20, lineHeight: 1.6 }}>
-                  Share this Peer ID so others can add you as a contact. It is derived from your public key and does not reveal your password.
-                </div>
-                <button style={styles.primaryBtn} onClick={onComplete}>
-                  ENTER ALTERCHAT
-                </button>
+                <div style={{ fontSize: 11, color: C.dim, marginBottom: 18 }}>{t.inviteLater}</div>
+                <button style={styles.primaryBtn} onClick={onComplete}>{t.enter}</button>
               </>
             )}
 
             {createStep !== 3 && (
-              <button style={styles.backLink} onClick={() => { setMode("choose"); setCreateStep(1); setCreateError(""); setProfileName(""); setNewPassword(""); setConfirmPassword(""); setBackupAcknowledged(false); }}>
-                back to start
-              </button>
+              <button style={styles.backLink} onClick={resetCreate}>{t.backToStart}</button>
             )}
           </>
         )}
 
         {mode === "open" && (
           <>
-            <div style={styles.heading}>Unlock Profile</div>
+            <div style={styles.heading}>{t.unlockTitle}</div>
             <form onSubmit={handleUnlock}>
-              <label style={styles.label}>Password</label>
+              <label style={styles.label}>{t.password}</label>
               <input
-                style={openError ? styles.inputError : styles.input}
+                style={{ ...styles.input, borderColor: openError ? "var(--accent-red)" : undefined }}
                 type="password"
-                placeholder="Enter your vault password"
+                placeholder={t.unlockPh}
                 value={openPassword}
                 onChange={(e) => { setOpenPassword(e.target.value); setOpenError(""); }}
                 autoFocus
               />
               {openError && <div style={styles.errorText}>{openError}</div>}
-              <button
-                type="submit"
-                style={isUnlocking ? styles.primaryBtnDisabled : styles.primaryBtn}
-                disabled={isUnlocking}
-              >
-                {isUnlocking ? "UNLOCKING..." : "UNLOCK"}
+              <button type="submit" style={{ ...styles.primaryBtn, opacity: busy ? 0.5 : 1 }} disabled={busy}>
+                {busy ? t.unlocking : t.unlockBtn}
               </button>
             </form>
             <button style={styles.backLink} onClick={() => { setMode("choose"); setOpenError(""); setOpenPassword(""); }}>
-              back to start
+              {t.backToStart}
             </button>
           </>
         )}

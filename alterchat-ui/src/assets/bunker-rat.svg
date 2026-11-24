@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" role="img" aria-label="A rat chatting at an old CRT computer in an underground bunker">
+  <defs>
+    <radialGradient id="bulbGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffcf6b" stop-opacity="0.55"/>
+      <stop offset="0.45" stop-color="#ff9e2c" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ff9e2c" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="screenGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7cff6b" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#7cff6b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1c18"/>
+      <stop offset="1" stop-color="#0c0d0b"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f2a12"/>
+      <stop offset="1" stop-color="#071508"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6b6259"/>
+      <stop offset="1" stop-color="#3e3832"/>
+    </linearGradient>
+    <linearGradient id="crate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a3d24"/>
+      <stop offset="1" stop-color="#342315"/>
+    </linearGradient>
+    <pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect width="4" height="2" fill="#000" opacity="0.25"/>
+    </pattern>
+  </defs>
+
+  <!-- bunker wall -->
+  <rect width="800" height="500" fill="url(#wall)"/>
+  <g stroke="#262922" stroke-width="3" opacity="0.9">
+    <path d="M0 110 H800 M0 210 H800 M0 310 H800"/>
+    <path d="M140 0 V110 M420 0 V110 M690 0 V110 M60 110 V210 M300 110 V210 M560 110 V210 M180 210 V310 M470 210 V310 M740 210 V310"/>
+  </g>
+  <!-- hazard stripe -->
+  <g transform="translate(0 395)">
+    <rect width="800" height="18" fill="#c99a1e"/>
+    <g fill="#1a1a14">
+      <path d="M0 0h20l-18 18H-18z M50 0h20l-18 18H32z M100 0h20l-18 18H82z M150 0h20l-18 18h-20z M200 0h20l-18 18h-20z M250 0h20l-18 18h-20z M300 0h20l-18 18h-20z M350 0h20l-18 18h-20z M400 0h20l-18 18h-20z M450 0h20l-18 18h-20z M500 0h20l-18 18h-20z M550 0h20l-18 18h-20z M600 0h20l-18 18h-20z M650 0h20l-18 18h-20z M700 0h20l-18 18h-20z M750 0h20l-18 18h-20z M800 0h20l-18 18h-20z"/>
+    </g>
+  </g>
+  <rect y="413" width="800" height="87" fill="#0a0b09"/>
+
+  <!-- pipes -->
+  <g>
+    <rect x="0" y="26" width="800" height="22" fill="#4a3a2c"/>
+    <rect x="0" y="26" width="800" height="5" fill="#6e563f"/>
+    <rect x="120" y="20" width="16" height="34" rx="3" fill="#2f251c"/>
+    <rect x="520" y="20" width="16" height="34" rx="3" fill="#2f251c"/>
+    <rect x="740" y="48" width="18" height="120" fill="#3d3024"/>
+    <path d="M740 168 q9 14 18 0" fill="#3d3024"/>
+    <!-- drip -->
+    <ellipse cx="749" cy="190" rx="3" ry="5" fill="#5d7a6a" opacity="0.8"/>
+  </g>
+
+  <!-- hanging bulb -->
+  <g class="bulb">
+    <circle cx="250" cy="120" r="170" fill="url(#bulbGlow)"/>
+    <line x1="250" y1="48" x2="250" y2="98" stroke="#111" stroke-width="3"/>
+    <rect x="243" y="96" width="14" height="10" fill="#555"/>
+    <ellipse cx="250" cy="118" rx="12" ry="15" fill="#ffd98a"/>
+    <ellipse cx="246" cy="113" rx="3" ry="5" fill="#fff6d8"/>
+  </g>
+
+  <!-- cables on floor -->
+  <path d="M470 400 C430 430 360 420 300 445 S180 470 120 455" fill="none" stroke="#151515" stroke-width="7"/>
+  <path d="M520 400 C560 440 640 430 700 460" fill="none" stroke="#1d1d1d" stroke-width="5"/>
+
+  <!-- crate desk -->
+  <g>
+    <rect x="330" y="300" width="330" height="100" fill="url(#crate)"/>
+    <g stroke="#24170d" stroke-width="4">
+      <path d="M330 333 H660 M330 366 H660"/>
+      <path d="M330 300 L660 400 M660 300 L330 400" opacity="0.35"/>
+    </g>
+    <rect x="320" y="292" width="350" height="12" fill="#6b4a2c"/>
+    <text x="495" y="356" font-family="monospace" font-size="16" fill="#2a1a0e" text-anchor="middle" opacity="0.7">RATIONS · 1987</text>
+  </g>
+
+  <!-- CRT monitor -->
+  <g>
+    <circle cx="520" cy="210" r="190" fill="url(#screenGlow)"/>
+    <rect x="420" y="130" width="210" height="165" rx="14" fill="#b9b3a2"/>
+    <rect x="420" y="130" width="210" height="165" rx="14" fill="none" stroke="#8a8474" stroke-width="4"/>
+    <rect x="438" y="146" width="174" height="122" rx="10" fill="url(#screen)"/>
+    <g font-family="monospace" font-size="12" fill="#7cff6b">
+      <text x="450" y="168">&gt; sıçan_01: selam</text>
+      <text x="450" y="186">&gt; kör_köstebek: naber</text>
+      <text x="450" y="204">&gt; sıçan_01: peynir</text>
+      <text x="450" y="222">  geldi mi? 🧀</text>
+      <text x="450" y="240" opacity="0.7">[e2e şifreli]</text>
+      <rect class="cursor" x="450" y="250" width="9" height="12"/>
+    </g>
+    <rect x="438" y="146" width="174" height="122" rx="10" fill="url(#scan)"/>
+    <rect x="500" y="295" width="50" height="10" fill="#8a8474"/>
+    <circle cx="605" cy="282" r="4" fill="#7cff6b"/>
+    <!-- keyboard -->
+    <rect x="440" y="282" width="0" height="0"/>
+  </g>
+  <g>
+    <rect x="395" y="296" width="150" height="14" rx="3" fill="#a39d8c" transform="skewX(-20)"/>
+    <g fill="#7f7a6b">
+      <rect x="410" y="299" width="120" height="3" transform="skewX(-20)"/>
+      <rect x="410" y="304" width="120" height="3" transform="skewX(-20)"/>
+    </g>
+  </g>
+
+  <!-- rat -->
+  <g>
+    <!-- tail -->
+    <path d="M250 372 C200 400 170 440 215 455 S300 440 280 470" fill="none" stroke="#c48d86" stroke-width="7" stroke-linecap="round"/>
+    <!-- stool (paint bucket) -->
+    <path d="M250 340 h90 l-8 60 h-74 z" fill="#2e4a3a"/>
+    <rect x="246" y="334" width="98" height="10" rx="3" fill="#3c5e4b"/>
+    <!-- body -->
+    <ellipse cx="300" cy="300" rx="62" ry="52" fill="url(#fur)"/>
+    <ellipse cx="318" cy="314" rx="30" ry="30" fill="#8c8278" opacity="0.6"/>
+    <!-- hind foot -->
+    <ellipse cx="318" cy="342" rx="22" ry="8" fill="#c48d86"/>
+    <!-- arm reaching to keyboard -->
+    <path d="M335 290 C360 292 380 296 402 300" fill="none" stroke="#5a524a" stroke-width="16" stroke-linecap="round"/>
+    <ellipse cx="406" cy="300" rx="9" ry="6" fill="#c48d86"/>
+    <!-- head -->
+    <g>
+      <path d="M318 222 C350 214 392 228 412 246 C400 262 360 266 334 262 C314 258 300 240 318 222 z" fill="url(#fur)"/>
+      <ellipse cx="320" cy="242" rx="38" ry="34" fill="url(#fur)"/>
+      <!-- nose -->
+      <circle cx="412" cy="247" r="5" fill="#e0a39b"/>
+      <!-- whiskers -->
+      <g stroke="#d8d2c4" stroke-width="1.4" opacity="0.8">
+        <path d="M400 248 L440 236 M400 251 L442 252 M400 254 L438 266"/>
+      </g>
+      <!-- eye, lit green by the screen -->
+      <circle cx="362" cy="236" r="7" fill="#0b0b0b"/>
+      <circle cx="365" cy="234" r="2.5" fill="#9dff8f"/>
+      <!-- ear -->
+      <ellipse cx="306" cy="208" rx="24" ry="26" fill="#5a524a"/>
+      <ellipse cx="308" cy="210" rx="15" ry="17" fill="#d89a93"/>
+      <!-- headset -->
+      <path d="M292 214 C300 180 350 178 360 214" fill="none" stroke="#1c1c1c" stroke-width="6"/>
+      <rect x="282" y="228" width="16" height="24" rx="6" fill="#1c1c1c"/>
+      <path d="M290 250 C300 272 340 276 372 262" fill="none" stroke="#1c1c1c" stroke-width="3"/>
+      <circle cx="374" cy="261" r="4" fill="#ff5b3a"/>
+    </g>
+  </g>
+
+  <!-- mug -->
+  <g>
+    <rect x="600" y="270" width="26" height="24" rx="3" fill="#8c3b2b"/>
+    <path d="M626 276 q12 2 0 14" fill="none" stroke="#8c3b2b" stroke-width="4"/>
+    <path d="M606 262 q4 -8 0 -16 M616 262 q4 -8 0 -16" fill="none" stroke="#9a9a9a" stroke-width="2" opacity="0.5"/>
+  </g>
+
+  <!-- vignette -->
+  <rect width="800" height="500" fill="url(#vignette)" opacity="0"/>
+</svg>
