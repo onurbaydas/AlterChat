@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1b26"/>
+      <stop offset="1" stop-color="#05090d"/>
+    </linearGradient>
+    <linearGradient id="hex" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="1" stop-color="#00cc99"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#bg)"/>
+  <!-- outer hexagon -->
+  <polygon points="512,150 825,331 825,693 512,874 199,693 199,331"
+           fill="none" stroke="url(#hex)" stroke-width="56" stroke-linejoin="round"/>
+  <!-- chat bubble -->
+  <path d="M372 400 h280 a40 40 0 0 1 40 40 v150 a40 40 0 0 1 -40 40 h-150 l-90 70 v-70 h-40 a40 40 0 0 1 -40 -40 v-150 a40 40 0 0 1 40 -40 z"
+        fill="url(#hex)"/>
+  <circle cx="442" cy="515" r="26" fill="#05090d"/>
+  <circle cx="512" cy="515" r="26" fill="#05090d"/>
+  <circle cx="582" cy="515" r="26" fill="#05090d"/>
+</svg>

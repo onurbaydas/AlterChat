@@ -35,6 +35,31 @@
     ],
     "category": "SocialNetworking",
     "shortDescription": "Local-first, peer-to-peer encrypted messaging",
-    "copyright": "AlterChat contributors, AGPL-3.0"
+    "copyright": "AlterChat contributors, AGPL-3.0",
+    "publisher": "AlterChat contributors",
+    "homepage": "https://github.com/onurbaydas/AlterChat",
+    "longDescription": "AlterChat is a local-first, peer-to-peer, end-to-end encrypted messenger. No accounts, no central server: your identity and messages stay on your device.",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Turkish",
+          "English"
+        ],
+        "displayLanguageSelector": true,
+        "startMenuFolder": "AlterChat"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }
