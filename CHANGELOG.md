@@ -101,6 +101,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounds-checked and size-capped. A new `Notify` capability was added. The new
   Tauri command `run_plugin` executes on a blocking thread, using the
   enabled flag and grants stored in the DB. See `docs/PLUGINS.md`.
+- **File transfer works end to end.** The sender encrypts the file into
+  256 KiB AES-256-GCM chunks with a random per-file key, seals the key to the
+  friend's X25519 `offline_pubkey` and sends a `FileOffer`. The recipient
+  validates every field (id, size, chunk size/count, hash, sealed key;
+  filenames are sanitised against path separators, reserved Windows names,
+  bidi tricks and length), checks block list, `min_trust_file`, storage quota,
+  a max file size (default 100 MiB) and max concurrent transfers (default 3),
+  then asks the user (`file-offer` event, `accept_file_offer` /
+  `reject_file_offer` commands). Accepted transfers pull chunks with
+  `FileChunkRequest` (4 in flight, 4 attempts per chunk), verify each chunk,
+  reassemble, check the SHA-256 and save to the Downloads folder (fallback:
+  profile storage) without overwriting. Stalled, expired or failed transfers
+  are cleaned up. Progress and results are shown in the UI (`file-progress`,
+  `file-received`, `file-sent`, `file-transfer-failed`); received files open
+  via `open_received_file` (executables are only revealed in their folder).
+  New wire messages: `FileOffer`, `FileChunkRequest`, `FileFinished` and
+  their responses. The legacy whole-file `File` request is now refused.
+  `send_file` takes the file as a raw IPC body instead of a JSON array.
 - Atomic database migration framework with versioned schema
   (`CURRENT_DB_VERSION = 1`)
 - Onboarding wizard with password-protected profile creation and backup warning

@@ -137,6 +137,10 @@ central message stores. AlterChat goes in the opposite direction:
 
 ### Files, Media, and Storage
 
+- Ask-before-accept peer-to-peer file transfer: per-file AES-256-GCM key
+  sealed to the friend's X25519 key, 256 KiB chunks pulled with a bounded
+  window and retries, SHA-256 verified, saved to Downloads without
+  overwriting (size, concurrency, trust and quota limits).
 - File manifests with 256 KiB chunking.
 - AES-256-GCM chunk encryption plus plaintext hash verification.
 - Storage quotas and retention settings.
@@ -488,9 +492,10 @@ Suggested next milestones:
 - SOCKS5 outbound routing is done; I2P mode still needs SAM-based inbound
   tunnels (and `.i2p` bootstrap nodes) to be useful beyond dialing known
   `.i2p` peers.
-- Implement receiving of `File` requests.
 - Plugins: a UI for installing plugins and granting capabilities, and routing
   of incoming `PluginEvent` requests to `run_plugin`.
+- File transfer: resume after restart, sending to offline peers, and a
+  longer request timeout for slow (Tor) links.
 - Ship community bootstrap addresses.
 - Add migration tests for SQLite schema evolution.
 - Add end-to-end integration tests for two local nodes.

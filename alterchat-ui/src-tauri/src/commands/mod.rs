@@ -1,6 +1,8 @@
 #[macro_use]
 pub mod auth;
 #[macro_use]
+pub mod files;
+#[macro_use]
 pub mod governance;
 #[macro_use]
 pub mod media;

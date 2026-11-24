@@ -1,22 +1,77 @@
 use crate::*;
 
+/// Offer a file to a friend. The file bytes are the raw IPC body (no JSON
+/// number arrays); metadata travels in headers: `x-peer-id`, `x-file-name`
+/// (hex of the UTF-8 name) and optional `x-file-mime`. Encryption runs off
+/// the event loop. Returns the transfer id.
 #[tauri::command]
 pub async fn send_file(
-    peer_id: String,
-    filename: String,
-    data: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("Expected raw file bytes".to_string());
+    };
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let peer_id = header("x-peer-id").ok_or("Missing peer id")?;
+    peer_id
+        .parse::<PeerId>()
+        .map_err(|_| "Invalid peer id".to_string())?;
+    let filename = header("x-file-name")
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .ok_or("Invalid file name")?;
+    let mime = header("x-file-mime").filter(|m| !m.is_empty());
+
+    let (pubkey, limits) = {
+        let path_guard = state.db_path.lock().await;
+        let path = path_guard.as_ref().ok_or("Not logged in")?;
+        let key_guard = state.db_key.lock().await;
+        let key = key_guard.as_ref().ok_or("Not logged in")?;
+        let conn = db::init_db(path, key).map_err(|e| e.to_string())?;
+        let friend = db::get_friends(&conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|f| f.peer_id == peer_id)
+            .ok_or("Files can only be sent to friends")?;
+        let pubkey: [u8; 32] = friend
+            .offline_pubkey
+            .as_deref()
+            .and_then(|h| hex::decode(h).ok())
+            .and_then(|b| b.try_into().ok())
+            .ok_or("Friend has no public key; add it to send files")?;
+        (pubkey, file_xfer::TransferSettings::load(&conn))
+    };
+    if data.len() as u64 > limits.max_file_bytes() {
+        return Err(format!(
+            "File is larger than the {} MiB limit",
+            limits.max_file_size_mb
+        ));
+    }
+    let data = data.clone();
+    let (offer, chunks) = tauri::async_runtime::spawn_blocking(move || {
+        alterchat_core::transfer::prepare_outgoing(&filename, mime.as_deref(), &data, &pubkey)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    let transfer_id = offer.transfer_id.clone();
     state
         .tx
         .send(AppCommand::SendFile {
             peer_id,
-            filename,
-            data,
+            offer,
+            chunks: std::sync::Arc::new(chunks),
         })
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(transfer_id)
 }
 
 #[tauri::command]

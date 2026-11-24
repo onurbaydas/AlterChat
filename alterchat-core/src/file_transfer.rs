@@ -68,6 +68,21 @@ pub enum P2pRequest {
         challenge_id: String,
         solution: Vec<u8>,
     },
+    /// Sender -> recipient: announce a file (see `transfer` module docs).
+    FileOffer {
+        offer: crate::transfer::FileOffer,
+    },
+    /// Recipient -> sender: pull one encrypted chunk of an accepted offer.
+    FileChunkRequest {
+        transfer_id: String,
+        index: u64,
+    },
+    /// Either side: the transfer ended (rejected, cancelled, failed or done).
+    FileFinished {
+        transfer_id: String,
+        ok: bool,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +118,21 @@ pub enum P2pResponse {
         success: bool,
     },
     PowAck {
+        success: bool,
+    },
+    /// `success` means the offer was queued for the user's decision.
+    FileOfferAck {
+        transfer_id: String,
+        success: bool,
+        message: String,
+    },
+    /// `chunk` is `None` if the sender has no such transfer/index.
+    FileChunkData {
+        transfer_id: String,
+        index: u64,
+        chunk: Option<crate::storage::EncryptedChunk>,
+    },
+    FileFinishedAck {
         success: bool,
     },
 }
