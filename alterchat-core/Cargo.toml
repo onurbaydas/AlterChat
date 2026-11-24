@@ -31,5 +31,9 @@ thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+wasmi = { version = "2.0.2", default-features = false, features = ["std", "validate", "stable", "auto-dispatch"] }
 x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 zeroize = { version = "1.8.2", features = ["derive"] }
+
+[dev-dependencies]
+wat = "1.251.0"

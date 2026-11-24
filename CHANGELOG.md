@@ -79,6 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sandboxed WASM plugin execution.** `PluginHost::run_plugin` now runs
+  plugins in a `wasmi` interpreter. Each run verifies the manifest signature
+  and WASM hash first. Limits: a fuel budget (10M instructions by default) and
+  a memory cap (16 pages by default, enforced on growth). There is no WASI and
+  no start function. Host functions are linked only for capabilities that are
+  both requested in the signed manifest and granted by the user. Any other
+  import is refused before instantiation. Every guest pointer and length is
+  bounds-checked and size-capped. A new `Notify` capability was added. The new
+  Tauri command `run_plugin` executes on a blocking thread, using the
+  enabled flag and grants stored in the DB. See `docs/PLUGINS.md`.
 - Atomic database migration framework with versioned schema
   (`CURRENT_DB_VERSION = 1`)
 - Onboarding wizard with password-protected profile creation and backup warning

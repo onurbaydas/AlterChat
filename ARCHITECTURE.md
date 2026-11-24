@@ -249,10 +249,12 @@ The plugin module defines:
 - plugin capabilities
 - signed plugin manifests
 - policy checks
-- a host model for executing plugin-like code
+- a `wasmi`-based sandbox (`PluginHost`) with fuel and memory limits and
+  capability-gated host functions
 
-The database and Tauri commands can store/list plugin manifests. Running
-untrusted plugin code is security-sensitive and should require dedicated review.
+The database and Tauri commands can store, list and run plugins (see
+[docs/PLUGINS.md](docs/PLUGINS.md)). Running untrusted plugin code is
+security-sensitive and should require dedicated review.
 
 ## Tauri Backend
 

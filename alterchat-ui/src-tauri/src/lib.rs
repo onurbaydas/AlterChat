@@ -768,7 +768,7 @@ pub fn run() {
             commands::governance::save_role, commands::governance::list_roles, commands::governance::create_permission_grant, commands::governance::save_permission_grant, commands::governance::list_permission_grants,
             commands::governance::create_trust_edge, commands::governance::save_trust_edge, commands::governance::list_trust_edges, commands::messaging::search_messages,
             commands::media::prepare_encrypted_file, commands::storage::list_file_manifests, commands::storage::list_stored_chunks, commands::storage::list_peer_capabilities,
-            commands::plugin::save_plugin, commands::plugin::list_plugins, commands::auth::solve_pow_challenge,
+            commands::plugin::save_plugin, commands::plugin::list_plugins, commands::plugin::run_plugin, commands::auth::solve_pow_challenge,
             commands::auth::panic_wipe, commands::auth::panic_wipe_all, commands::auth::login_profile,
             // Yeni komutlar (#5 Safety, #6 QR, #9/#14 Vault, #11 Anon, #4 Revoke, #21 System)
             commands::settings::get_safety_number, commands::settings::get_peer_uri,

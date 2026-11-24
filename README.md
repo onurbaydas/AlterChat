@@ -138,7 +138,11 @@ central message stores. AlterChat goes in the opposite direction:
 ### Plugins and Extensibility
 
 - Plugin manifest and capability policy model in `alterchat-core`.
-- Tauri commands to save and list plugin manifests.
+- Sandboxed WASM plugin execution (wasmi interpreter): signature and hash
+  verification, fuel and memory limits, no WASI, and capability-gated host
+  functions. See [docs/PLUGINS.md](docs/PLUGINS.md) for the ABI.
+- Tauri commands to save, list and run plugins (`run_plugin` runs on a blocking
+  thread).
 - Plugin event request-response messages.
 - Plugin execution remains a sensitive extension surface and should be reviewed
   carefully before enabling untrusted code.
@@ -471,7 +475,9 @@ Suggested next milestones:
 - Send incremental CRDT changes and sign room messages. Whole-document
   broadcasts hit gossipsub size limits, and senders are unauthenticated.
 - Finish I2P/SOCKS5 outbound routing (currently refused: fail closed).
-- Implement receiving of `File` requests and the WASM plugin sandbox.
+- Implement receiving of `File` requests.
+- Plugins: a UI for installing plugins and granting capabilities, and routing
+  of incoming `PluginEvent` requests to `run_plugin`.
 - Ship community bootstrap addresses.
 - Add migration tests for SQLite schema evolution.
 - Add end-to-end integration tests for two local nodes.
