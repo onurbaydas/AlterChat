@@ -1,3 +1,5 @@
+# Pinned so local builds, CI and release builds use the same compiler and
+# lints. Bump deliberately and fix new clippy findings in the same change.
 [toolchain]
-channel = "stable"
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]

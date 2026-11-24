@@ -17,7 +17,7 @@ quickly, but security-sensitive enough that every change needs clear reasoning.
 
 Requirements:
 
-- Rust 1.95+
+- Rust 1.96 (pinned in rust-toolchain.toml)
 - Node.js 20+
 - npm
 - Tauri v2 platform prerequisites
