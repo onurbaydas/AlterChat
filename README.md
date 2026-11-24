@@ -468,8 +468,9 @@ Suggested next milestones:
   send first.
 - Authenticate the offline DHT mailbox (sender signatures, friend-only, dedup)
   or drop it, since it bypasses the ratchet's forward secrecy.
-- Send incremental CRDT changes and sign room messages. Whole-document
-  broadcasts hit gossipsub size limits, and senders are unauthenticated.
+- Room messages are now signed and synced incrementally. Still open: any
+  room-key holder can edit or delete CRDT entries (edits show as unverified,
+  deletes are not detected), and the orphan-change queue is unbounded.
 - Finish I2P/SOCKS5 outbound routing (currently refused: fail closed).
 - Implement receiving of `File` requests and the WASM plugin sandbox.
 - Ship community bootstrap addresses.

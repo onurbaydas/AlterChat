@@ -32,6 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Malformed CRDT room data from the network can no longer panic the event loop.
 - Fixed: Tauri CSP was null, now enforces strict policy (no unsafe-eval)
 - Deprecated: Legacy `PrivateMessage` and `RatchetPrivateMessage` DM paths
+- **Signed room messages (breaking wire format).** Each group-room message now
+  carries the author's protobuf-encoded libp2p Ed25519 public key and a
+  signature over `(room_id, msg_id, peer_id, nick, text, timestamp, ttl)`.
+  The receiver checks the signature against the current CRDT values and
+  requires `peer_id == PeerId(pubkey)`; failing messages are shown with an
+  "UNVERIFIED" marker instead of being trusted. Gossipsub stays anonymous.
+- **Incremental room sync.** Only the new Automerge change is published per
+  message (encrypted with the room key, padded), instead of the whole
+  document, which broke past gossipsub's 64 KiB limit. New
+  `RoomSyncRequest { room_tag, heads }` / `RoomSyncResponse { payload, more }`
+  request-response messages let new or out-of-date peers catch up in chunks
+  of at most 512 KiB (sent every 30 s, on connect, on join, and when a gossip
+  change arrives with missing dependencies). Inputs are size-bounded
+  (16 KiB text, 48 KiB per change, 64 heads) and malformed data is rejected
+  without touching the stored document. Old whole-document payloads are no
+  longer accepted on the wire; old local room files still load and their
+  messages are shown as unverified. Each message is one Automerge op (a
+  bincode record under `m/<msg_id>`), because Automerge 0.9's per-op cost
+  grows with document size.
 
 ### Fixed
 
