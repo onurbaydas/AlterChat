@@ -1025,7 +1025,8 @@ pub fn run() {
                                     (alterchat_core::network::ProxyMode::Direct, alterchat_core::network::TransportPreference::Tcp) => {
                                         let _ = new_swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap());
                                     }
-                                    (_, alterchat_core::network::TransportPreference::Quic) => {
+                                    // Never listen in Tor/SOCKS5/I2P mode (outbound-only).
+                                    (alterchat_core::network::ProxyMode::Direct, alterchat_core::network::TransportPreference::Quic) => {
                                         let _ = new_swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap());
                                     }
                                     _ => {}

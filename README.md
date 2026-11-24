@@ -113,8 +113,18 @@ central message stores. AlterChat goes in the opposite direction:
 - Relay server/client and DCUtR behaviours are wired into the swarm.
 - Tor transport integration through the vendored `libp2p-community-tor` crate.
 - QUIC transport preference path.
-- I2P and SOCKS5 configuration fields exist, with I2P SOCKS proxy routing still
-  marked as TODO in code.
+- SOCKS5 proxy transport (outbound only, fail closed): TCP multiaddrs
+  (`/ip4`, `/ip6`, `/dns*`, `/onion3`) are dialed through a SOCKS5 proxy with
+  remote DNS resolution and optional username/password
+  (`user:pass@host:port`). No direct TCP, QUIC, local DNS, listeners, mDNS,
+  relay server, or hole punching in this mode; an unreachable proxy is an error,
+  never a fallback.
+- I2P mode (experimental): the same SOCKS5 transport pointed at the I2P
+  router's SOCKS proxy (default `127.0.0.1:4447`). It only dials `.i2p` host
+  names (`/dns/<name>.b32.i2p/tcp/<port>/p2p/<id>`), so it reaches only peers
+  that publish an I2P server tunnel to their libp2p TCP port. Clearnet peers,
+  normal bootstrap nodes, and inbound connections are not reachable in this
+  mode, and AlterChat does not create I2P tunnels itself (no SAM support).
 
 ### Governance and Trust
 
@@ -243,8 +253,9 @@ Important limitations:
 - No independent security audit has been completed.
 - The Tauri CSP is strict (`script-src 'self'`). It still allows
   `'unsafe-inline'` styles because the UI uses inline style objects.
-- Some privacy features are experimental or partially wired. I2P SOCKS routing,
-  full pluggable transport deployment, and production-grade relay policy need
+- Some privacy features are experimental or partially wired. I2P mode is
+  outbound-only to `.i2p` destinations, and full pluggable transport
+  deployment and production-grade relay policy need
   additional implementation review.
 - WebRTC media E2EE uses browser APIs that may degrade when peer keys are not
   available.
@@ -470,7 +481,9 @@ Suggested next milestones:
   or drop it, since it bypasses the ratchet's forward secrecy.
 - Send incremental CRDT changes and sign room messages. Whole-document
   broadcasts hit gossipsub size limits, and senders are unauthenticated.
-- Finish I2P/SOCKS5 outbound routing (currently refused: fail closed).
+- SOCKS5 outbound routing is done; I2P mode still needs SAM-based inbound
+  tunnels (and `.i2p` bootstrap nodes) to be useful beyond dialing known
+  `.i2p` peers.
 - Implement receiving of `File` requests and the WASM plugin sandbox.
 - Ship community bootstrap addresses.
 - Add migration tests for SQLite schema evolution.

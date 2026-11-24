@@ -194,7 +194,24 @@ Residual risk:
 - traffic-analysis resistance requires deployment, route selection, and
   measurement
 - Tor usage through libp2p requires careful avoidance of identifying behavior
-- I2P/SOCKS5 routing is not fully implemented
+- SOCKS5 mode trusts the proxy operator: the proxy (and its exit) sees every
+  destination host name and port, and an unauthenticated local proxy can be
+  used by any local process. SOCKS5 itself is not encrypted; only the Noise
+  layer inside it is. Proxy credentials in `proxy_addr` are stored in the
+  encrypted profile database but are sent in cleartext to the proxy (RFC 1929)
+- SOCKS5 mode fails closed: no direct TCP, QUIC, DNS transport, listeners,
+  mDNS, relay server, or DCUtR hole punching, and the proxy is probed at
+  session start so an unreachable proxy surfaces as `session-error`. If the
+  proxy goes down mid-session, dials fail; they never fall back to direct.
+  The proxy's own address may be resolved locally if it is a host name, so
+  use an IP literal for it
+- application-layer metadata still leaks through the tunnel: identify publishes
+  the peer id, agent string, and protocol list, and DHT records name the peer
+- I2P mode only reaches `.i2p` destinations through the router's SOCKS proxy
+  (default `127.0.0.1:4447`); non-`.i2p` targets are refused locally so they
+  are never handed to an outproxy. Inbound I2P reachability requires a
+  manually configured I2P server tunnel; AlterChat does not create tunnels
+  (no SAM support), and remote peers learn no `.i2p` address from identify
 
 ### Panic Wipe
 
