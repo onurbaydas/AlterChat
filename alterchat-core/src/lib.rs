@@ -6,6 +6,7 @@ pub mod file_transfer;
 pub mod governance;
 pub mod identity;
 pub mod mailbox;
+pub mod nat;
 pub mod network;
 pub mod onion;
 pub mod plugin;

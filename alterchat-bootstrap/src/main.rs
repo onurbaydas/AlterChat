@@ -9,6 +9,12 @@
 //! - `ALTERCHAT_BOOTSTRAP_PORT`  TCP and UDP/QUIC listen port (default: `4001`)
 //! - `ALTERCHAT_LISTEN_IP`       listen IPv4 address (default: `0.0.0.0`)
 //! - `ALTERCHAT_RELAY`           `0` disables the circuit relay service (default: enabled)
+//! - `ALTERCHAT_EXTERNAL_ADDRS`  comma-separated public multiaddrs of this node, e.g.
+//!   `/dns4/boot.example.org/tcp/4001,/ip4/203.0.113.7/tcp/4001`. Relay
+//!   reservations carry these addresses; without them the node only
+//!   advertises listen addresses on public IPs and addresses that at least
+//!   two different peers observed on the listen port. Use a `/dns4` name if
+//!   Tor users should be able to use this relay (Tor dials host names only).
 //!
 //! The node also acts as a libp2p circuit relay (v2) so peers behind NAT can
 //! reach each other and upgrade to a direct connection via DCUtR. Relayed
@@ -16,7 +22,9 @@
 //! only sees encrypted bytes and connection metadata. Circuits are limited
 //! in duration and volume to keep operator costs predictable.
 
+use libp2p::Multiaddr;
 use libp2p::identity::Keypair;
+use libp2p::multiaddr::Protocol;
 use libp2p::{
     PeerId, SwarmBuilder,
     futures::StreamExt,
@@ -24,6 +32,7 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent, behaviour::toggle::Toggle},
     tcp, yamux,
 };
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -64,6 +73,33 @@ fn env_or(name: &str, default: &str) -> String {
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| default.to_string())
+}
+
+fn has_public_ip(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| match p {
+        Protocol::Ip4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_documentation()
+                || (ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64))
+        }
+        Protocol::Ip6(ip) => {
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00
+                || (ip.segments()[0] & 0xffc0) == 0xfe80)
+        }
+        _ => false,
+    })
+}
+
+fn port_of(addr: &Multiaddr) -> Option<u16> {
+    addr.iter().find_map(|p| match p {
+        Protocol::Tcp(port) | Protocol::Udp(port) => Some(port),
+        _ => None,
+    })
 }
 
 #[tokio::main]
@@ -127,6 +163,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     swarm.listen_on(format!("/ip4/{listen_ip}/tcp/{port}").parse()?)?;
     swarm.listen_on(format!("/ip4/{listen_ip}/udp/{port}/quic-v1").parse()?)?;
 
+    // Relay v2 clients reject reservations without relay addresses, so the
+    // node needs at least one confirmed external address.
+    let configured: Vec<Multiaddr> = env_or("ALTERCHAT_EXTERNAL_ADDRS", "")
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    for addr in &configured {
+        println!("External address: {addr}");
+        swarm.add_external_address(addr.clone());
+    }
+    let auto_external = configured.is_empty();
+    // Observed-address candidates and the distinct peers that reported them.
+    let mut observed: HashMap<Multiaddr, HashSet<PeerId>> = HashMap::new();
+
     println!(
         "Circuit relay: {}",
         if relay_enabled { "enabled" } else { "disabled" }
@@ -142,6 +192,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Listening on: {address}/p2p/{local_peer_id}");
+                    if auto_external && has_public_ip(&address) {
+                        swarm.add_external_address(address);
+                    }
                 }
                 SwarmEvent::Behaviour(BootstrapBehaviourEvent::Identify(identify::Event::Received {
                     peer_id,
@@ -150,6 +203,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })) => {
                     for addr in info.listen_addrs {
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                    }
+                    // Peers that dialed us see our real listen port; confirm an
+                    // observed address once two different peers agree on it.
+                    let addr = info.observed_addr;
+                    if auto_external && has_public_ip(&addr) && port_of(&addr) == Some(port) {
+                        if observed.len() >= 64 && !observed.contains_key(&addr) {
+                            observed.clear();
+                        }
+                        let seen = observed.entry(addr.clone()).or_default();
+                        seen.insert(peer_id);
+                        if seen.len() == 2 {
+                            println!("Confirmed external address: {addr}");
+                            swarm.add_external_address(addr);
+                        }
                     }
                 }
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {

@@ -180,6 +180,17 @@ impl Transport for TorTransport {
         addr: Multiaddr,
         _opts: libp2p::core::transport::DialOpts,
     ) -> Result<Self::Dial, TransportError<Self::Error>> {
+        // AlterChat: only `<host>/tcp/<port>[/p2p/<id>]`. Without this check a
+        // relay circuit address (`.../p2p/<relay>/p2p-circuit/p2p/<peer>`) would
+        // be dialed as a plain connection to the relay instead of being left
+        // to the relay transport.
+        if addr
+            .iter()
+            .skip(2)
+            .any(|p| !matches!(p, libp2p::core::multiaddr::Protocol::P2p(_)))
+        {
+            return Err(TransportError::MultiaddrNotSupported(addr));
+        }
         let maybe_tor_addr = match self.conversion_mode {
             AddressConversion::DnsOnly => safe_extract(&addr),
             AddressConversion::IpAndDns => dangerous_extract(&addr),

@@ -222,7 +222,7 @@ impl Default for FullConfig {
             dht_server_mode: false,
             relay_enabled: false,
             transport_preference: "tcp".to_string(),
-            relay_fallback_enabled: false,
+            relay_fallback_enabled: true,
             publish_capabilities: true,
             cover_traffic: false,
             msg_delay: true,
@@ -302,7 +302,8 @@ fn load_full_config(conn: &rusqlite::Connection) -> FullConfig {
     config.transport_preference = db::load_setting(conn, "transport_preference")
         .unwrap_or(None)
         .unwrap_or_else(|| "tcp".to_string());
-    config.relay_fallback_enabled = setting_bool(conn, "relay_fallback_enabled", false);
+    // Default on: without a relay circuit, users behind NAT or a proxy are unreachable.
+    config.relay_fallback_enabled = setting_bool(conn, "relay_fallback_enabled", true);
     config.publish_capabilities = setting_bool(conn, "publish_capabilities", true);
     config.cover_traffic = setting_bool(conn, "cover_traffic", false);
     config.msg_delay = setting_bool(conn, "msg_delay", true);
@@ -797,6 +798,21 @@ fn rejection_for_request(
     }
 }
 
+/// Forwards connectivity changes to the UI: `network-status`
+/// (`online`/`connecting`/`offline`), `network-reachability`
+/// (`direct`/`relayed`/`unreachable`) and throttled proxy failures as
+/// `session-error`.
+fn emit_nat_notices(app: &tauri::AppHandle, notices: Vec<alterchat_core::nat::NatNotice>) {
+    use alterchat_core::nat::NatNotice;
+    for notice in notices {
+        let _ = match notice {
+            NatNotice::Status(s) => app.emit("network-status", s.as_str().to_string()),
+            NatNotice::Reachability(r) => app.emit("network-reachability", r.as_str().to_string()),
+            NatNotice::ProxyError(msg) => app.emit("session-error", msg),
+        };
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (tx, mut rx) = mpsc::channel(100);
@@ -840,6 +856,8 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 let mut swarm: Option<libp2p::Swarm<network::AlterChatBehaviour>> = None;
+                // Relay reservations, reachability, network status, proxy errors.
+                let mut nat: Option<alterchat_core::nat::NatTraversal> = None;
                 let mut current_topic_name = "alterchat-global".to_string();
                 let mut room = crdt::Room::new(current_topic_name.clone(), None);
                 let mut topic = gossipsub::IdentTopic::new(current_topic_name.clone());
@@ -876,6 +894,17 @@ pub fn run() {
                             if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {
                                 let ctx = dm_runtime::DmCtx { app: &app_handle, offline_secret: &offline_secret_bytes };
                                 dm_rt.on_tick(conn, s, &ctx);
+                            }
+                            if let (Some(n), Some(s)) = (&mut nat, &mut swarm) {
+                                let now = std::time::Instant::now();
+                                emit_nat_notices(&app_handle, n.tick(s, now));
+                                // Find friends' (possibly relayed) addresses in the DHT.
+                                if let Some(conn) = &conn_opt {
+                                    let friends = db::get_friends(conn).unwrap_or_default().into_iter()
+                                        .filter(|f| !f.blocked)
+                                        .filter_map(|f| f.peer_id.parse::<PeerId>().ok());
+                                    n.lookup_peers(s, friends, now);
+                                }
                             }
                             if let Some(ref mut s) = swarm {
                                 let my_pubkey_key = alterchat_core::crypto::get_dht_pubkey_key(&my_peer_id);
@@ -996,6 +1025,9 @@ pub fn run() {
                                     publish_capabilities: full_config.publish_capabilities,
                                     protocol_versions: vec!["/alterchat/p2p/1.0.0".to_string()],
                                 };
+                                swarm = None;
+                                nat = None;
+                                let _ = app_handle.emit("network-status", "connecting".to_string());
                                 let mut new_swarm = match network::create_swarm(keypair.clone(), network_config.clone()).await {
                                     Ok(s) => s,
                                     Err(e) => {
@@ -1013,7 +1045,8 @@ pub fn run() {
 
                                 // Zero-config: kullanıcı hiçbir şey girmeden ağa girer.
                                 // Öncelik sırası: (1) kaydedilmiş peer'lar, (2) user bootstrap, (3) topluluk listesi
-                                if let Some(conn) = &conn_opt {
+                                {
+                                    let conn = &conn;
                                     // 7 günden eski peer'ları temizle
                                     let _ = db::cleanup_old_peers(conn, 7 * 24 * 60 * 60 * 1000);
                                     // Önceki oturumdan bilinen peer'lara bağlan
@@ -1032,11 +1065,19 @@ pub fn run() {
                                     user_addrs = alterchat_core::network::COMMUNITY_BOOTSTRAP_ADDRS
                                         .iter().map(|s| s.to_string()).collect();
                                 }
-                                for addr_str in user_addrs {
+                                for addr_str in &user_addrs {
                                     if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
                                         let _ = new_swarm.dial(addr);
                                     }
                                 }
+                                // Bootstrap nodes double as circuit relays (relay v2). When
+                                // `relay_fallback_enabled` is on, a circuit is reserved on up to
+                                // two of them so peers behind NAT / Tor / SOCKS5 are reachable.
+                                let mut nat_state = alterchat_core::nat::NatTraversal::new(
+                                    keypair.clone(),
+                                    &network_config,
+                                    &network::effective_bootstrap_addrs(&user_addrs),
+                                );
 
                                 if let Some(history) = room_history(&room) {
                                     let _ = app_handle.emit("chat-history", history);
@@ -1078,6 +1119,8 @@ pub fn run() {
                                     }
                                     _ => {}
                                 }
+                                emit_nat_notices(&app_handle, nat_state.start());
+                                nat = Some(nat_state);
                                 swarm = Some(new_swarm);
                                 conn_opt = Some(conn);
                             }
@@ -1413,6 +1456,9 @@ pub fn run() {
                                 libp2p::futures::future::pending().await
                             }
                         }) => {
+                            if let (Some(n), Some(s)) = (&mut nat, &mut swarm) {
+                                emit_nat_notices(&app_handle, n.on_swarm_event(s, &event, std::time::Instant::now()));
+                            }
                             match event {
                             SwarmEvent::Behaviour(network::AlterChatBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, message_id: _, message })) => {
                                 if let Some(conn) = &conn_opt {
@@ -1940,6 +1986,12 @@ pub fn run() {
                                 result: libp2p::kad::QueryResult::GetRecord(Ok(libp2p::kad::GetRecordOk::FoundRecord(peer_record))),
                                 ..
                             })) => {
+                                // Signed address records of friends (direct + relay circuits).
+                                if let (Some(n), Some(s)) = (&mut nat, &mut swarm) {
+                                    if n.on_record(s, &peer_record.record) {
+                                        continue;
+                                    }
+                                }
                                 // Prekey bundles and signed (recipient, sender) mailbox records;
                                 // everything is verified before use (see dm_runtime.rs).
                                 if let (Some(conn), Some(s)) = (&conn_opt, &mut swarm) {

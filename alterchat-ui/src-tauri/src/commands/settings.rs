@@ -77,7 +77,7 @@ pub async fn save_settings(
     config.dht_server_mode = dht_server_mode.unwrap_or(false);
     config.relay_enabled = relay_enabled.unwrap_or(false);
     config.transport_preference = transport_preference.unwrap_or_else(|| "tcp".to_string());
-    config.relay_fallback_enabled = relay_fallback_enabled.unwrap_or(false);
+    config.relay_fallback_enabled = relay_fallback_enabled.unwrap_or(true);
     config.publish_capabilities = publish_capabilities.unwrap_or(true);
     config.cover_traffic = cover_traffic;
     config.msg_delay = msg_delay;

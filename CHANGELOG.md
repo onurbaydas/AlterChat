@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Internet connectivity behind NAT through circuit relay v2.**
+  - With `relay_fallback_enabled` on (now the default for new profiles),
+    clients reserve circuits on up to two relays, bootstrap nodes first.
+  - Relayed addresses are published in a signed `PeerRecord` DHT record
+    (`/alterchat/addr/1/<peer id>`), validated by DHT record filtering.
+  - Friends that are not connected are looked up and dialed on their direct
+    and relayed addresses at the same time. DCUtR results are logged.
+  - Kademlia now stays in client mode unless DHT server mode is enabled, so
+    a relayed address no longer flips a node into DHT server mode.
+- Tor mode: relay circuits through Tor, so two Tor users can reach each other
+  through a relay. Tor and SOCKS5 users reserve a circuit on the bootstrap
+  relay so they are reachable. Hole punching is off in proxy modes.
+- `network-reachability` UI event (`direct` / `relayed` / `unreachable`).
+  `network-status` now follows the actual connection state
+  (`online` / `connecting` / `offline`).
+- Bootstrap node: `ALTERCHAT_EXTERNAL_ADDRS`. It also confirms public listen
+  addresses and addresses that two peers observed, because relay reservations
+  without a relay address are rejected by clients.
+
+### Fixed
+
+- In SOCKS5/I2P mode, a dial that fails because the proxy is down now raises
+  `session-error`, throttled to once every 5 minutes, instead of failing
+  silently. Tor mode reports repeated dial failures the same way. When every
+  connection is lost, bootstrap nodes are re-dialed every 30 seconds.
+- The Tor transport no longer accepts relay circuit addresses: it used to dial
+  them as plain connections to the relay.
+- At session start, known peers are dialed from the profile that is being
+  opened, not from the previous one.
+
 ### Security
 
 - **Direct messages now use X3DH + ML-KEM-768 and the Double Ratchet

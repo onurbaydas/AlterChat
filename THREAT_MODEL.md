@@ -67,6 +67,23 @@ Can provide poor routing information, disappear, log inbound connection
 attempts, or bias discovery. A bootstrap node should not be treated as an
 authority.
 
+Bootstrap nodes also run the circuit relay v2 service that peers behind NAT,
+Tor, or SOCKS5 use to stay reachable. A malicious or compromised relay can:
+
+- learn which peer ids hold reservations (presence), which pairs of peers talk
+  through it, when, and how many bytes they exchange;
+- see the source IP of each peer that connects to it directly (in Tor/SOCKS5
+  mode, only the exit or proxy address);
+- refuse, throttle, or cut circuits (denial of service).
+
+It cannot read or modify relayed traffic, because Noise runs end to end
+between the two peers through the circuit. It cannot impersonate a peer,
+because the remote peer id is authenticated. It cannot redirect peers with
+forged address records, because those records are signed by the peer's
+identity key, bound to their DHT key, and rejected if stale or rolled back.
+Users who do not want to expose this metadata to a relay can turn off
+`relay_fallback_enabled`. They then stay unreachable from behind NAT.
+
 ### Malware on the User's Device
 
 Can read process memory, intercept keystrokes, steal unlocked database contents,
@@ -355,10 +372,16 @@ Mitigations:
 - random delay helpers
 - onion packet experiments
 
+Relay circuits (see Compromised Bootstrap Node) give the relay operator
+communication-pair and timing metadata. Spreading reservations over two
+relays limits what one operator sees about inbound traffic, but not about a
+single conversation.
+
 Hardening needed:
 
 - measured network privacy profiles
-- route selection and relay admission policy
+- route selection and relay admission policy (any peer that advertises the
+  relay hop protocol can currently become a relay, after the bootstrap nodes)
 - avoiding Identify leaks in privacy modes
 - production guidance for Tor/I2P use
 

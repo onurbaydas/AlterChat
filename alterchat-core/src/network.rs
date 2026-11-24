@@ -156,7 +156,8 @@ impl Default for NetworkPrivacyConfig {
             mdns_enabled: true,
             dht_server_mode: false,
             relay_enabled: false,
-            relay_fallback_enabled: false,
+            // Reserve relay circuits so peers behind NAT / proxies are reachable.
+            relay_fallback_enabled: true,
             publish_capabilities: true,
             protocol_versions: vec!["/alterchat/p2p/1.0.0".to_string()],
         }
@@ -179,7 +180,9 @@ pub struct AlterChatBehaviour {
     /// Only active when the user volunteers as a relay (`relay_enabled`).
     pub relay_server: Toggle<relay::Behaviour>,
     pub relay_client: relay::client::Behaviour,
-    pub dcutr: dcutr::Behaviour,
+    /// Hole punching; disabled in Tor/SOCKS5/I2P mode, where every dial goes
+    /// through the proxy and connections stay on the relay circuit.
+    pub dcutr: Toggle<dcutr::Behaviour>,
 }
 
 pub async fn create_swarm(
@@ -238,9 +241,15 @@ pub async fn create_swarm(
     let store = kad::store::MemoryStore::new(local_peer_id);
     let mut kademlia = kad::Behaviour::with_config(local_peer_id, store, cfg);
     // Proxy modes are outbound-only, so advertising DHT server mode is useless.
-    if config.dht_server_mode && socks_config.is_none() {
-        kademlia.set_mode(Some(kad::Mode::Server));
-    }
+    // Otherwise stay a DHT client explicitly: Kademlia's automatic mode would
+    // switch to server mode as soon as a relay circuit address is confirmed,
+    // routing DHT traffic through the relay. Peers find our (relayed)
+    // addresses through the signed address record instead (see `nat`).
+    kademlia.set_mode(Some(if config.dht_server_mode && !anonymised {
+        kad::Mode::Server
+    } else {
+        kad::Mode::Client
+    }));
 
     // mDNS configuration for local network discovery
     let mdns = if config.mdns_enabled && !anonymised {
@@ -271,7 +280,7 @@ pub async fn create_swarm(
             .then(|| relay::Behaviour::new(local_peer_id, relay::Config::default())),
     );
     let (relay_transport, relay_client) = relay::client::new(local_peer_id);
-    let dcutr = dcutr::Behaviour::new(local_peer_id);
+    let dcutr = Toggle::from((!anonymised).then(|| dcutr::Behaviour::new(local_peer_id)));
 
     let behaviour = AlterChatBehaviour {
         gossipsub,
@@ -314,17 +323,27 @@ pub async fn create_swarm(
     } else if tor_mode {
         let tor_transport = libp2p_community_tor::TorTransport::bootstrapped().await?;
 
+        // Tor dialer plus relay circuits on top of it: a Tor user has no
+        // listener, so a circuit reservation on a relay (reached through
+        // Tor) is the only way other peers can reach them.
         let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_other_transport(|key| {
-                let noise_config = noise::Config::new(key).unwrap();
-                let yamux_config = yamux::Config::default();
-
-                tor_transport
-                    .upgrade(libp2p::core::upgrade::Version::V1Lazy)
-                    .authenticate(noise_config)
-                    .multiplex(yamux_config)
-            })?
+            .with_other_transport(
+                |key| -> Result<_, Box<dyn std::error::Error + Send + Sync>> {
+                    Ok(tor_transport
+                        .upgrade(libp2p::core::upgrade::Version::V1Lazy)
+                        .authenticate(noise::Config::new(key)?)
+                        .multiplex(yamux::Config::default()))
+                },
+            )?
+            .with_other_transport(
+                |key| -> Result<_, Box<dyn std::error::Error + Send + Sync>> {
+                    Ok(relay_transport
+                        .upgrade(libp2p::core::upgrade::Version::V1Lazy)
+                        .authenticate(noise::Config::new(key)?)
+                        .multiplex(yamux::Config::default()))
+                },
+            )?
             .with_behaviour(|_| behaviour)?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
             .build();

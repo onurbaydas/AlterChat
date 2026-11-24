@@ -351,7 +351,9 @@ fn mailbox_roundtrip_and_forgery_rejection() {
     let m2 = a.send(&b, "offline 2");
     let entries = vec![m1.to_bytes().unwrap(), m2.to_bytes().unwrap()];
     let key = mailbox::mailbox_key(&b.id, &a.id);
-    let value = mailbox::seal_mailbox(a.me.ed25519_seed(), &a.id, &b.id, &entries, now()).unwrap();
+    let sealed_at = now();
+    let value =
+        mailbox::seal_mailbox(a.me.ed25519_seed(), &a.id, &b.id, &entries, sealed_at).unwrap();
     let friend_a = |p: &str| p == a.id;
 
     let opened = mailbox::open_mailbox(&key, &value, &b.id, now(), &friend_a).unwrap();
@@ -414,8 +416,14 @@ fn mailbox_roundtrip_and_forgery_rejection() {
         Some(&value),
         now()
     ));
-    let older =
-        mailbox::seal_mailbox(a.me.ed25519_seed(), &a.id, &b.id, &entries, now() - 1000).unwrap();
+    let older = mailbox::seal_mailbox(
+        a.me.ed25519_seed(),
+        &a.id,
+        &b.id,
+        &entries,
+        sealed_at - 1000,
+    )
+    .unwrap();
     assert!(!mailbox::accept_dht_record(
         &key,
         &older,

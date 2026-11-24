@@ -110,7 +110,11 @@ central message stores. AlterChat goes in the opposite direction:
 - Gossipsub for room CRDT state publication.
 - request-response protocol for files, DMs, capabilities, plugin events, PoW
   messages, WebRTC signaling, and onion forwarding.
-- Relay server/client and DCUtR behaviours are wired into the swarm.
+- NAT traversal: clients reserve circuit relay v2 slots on up to two relays
+  (bootstrap nodes first), publish their relayed addresses in a signed DHT
+  record, and upgrade relayed connections to direct ones with DCUtR hole
+  punching. See [Internet Connectivity](#internet-connectivity).
+- Tor transport plus relay circuits through Tor, so Tor users can be reached.
 - Tor transport integration through the vendored `libp2p-community-tor` crate.
 - QUIC transport preference path.
 - SOCKS5 proxy transport (outbound only, fail closed): TCP multiaddrs
@@ -359,6 +363,17 @@ docker compose -f bootstrap/docker-compose.yml up -d
 | `ALTERCHAT_DATA_DIR` | `./bootstrap-data` | directory for the persistent node key |
 | `ALTERCHAT_BOOTSTRAP_PORT` | `4001` | TCP and UDP/QUIC listen port |
 | `ALTERCHAT_LISTEN_IP` | `0.0.0.0` | IPv4 listen address |
+| `ALTERCHAT_RELAY` | `1` | `0` disables the circuit relay v2 service |
+| `ALTERCHAT_EXTERNAL_ADDRS` | empty | comma-separated public multiaddrs of the node (e.g. `/dns4/boot.example.org/tcp/4001`) |
+
+The relay service needs at least one external address, because relay clients
+reject reservations that carry no relay address. Set
+`ALTERCHAT_EXTERNAL_ADDRS` on hosts behind 1:1 NAT (most cloud VMs). Without
+it the node advertises listen addresses on public IPs and addresses that two
+different peers observed on the listen port. Tor users dial host names only,
+so publish a `/dns4/...` address (and give Tor users a `/dns4` bootstrap
+entry) if the relay should serve them. Circuits are limited to 10 minutes and
+2 MiB each, and every peer can hold two reservations.
 
 Expected output includes a multiaddr similar to:
 
@@ -388,6 +403,69 @@ at startup. User-supplied addresses (via `NetworkPrivacyConfig.bootstrap_addrs`)
 take precedence, followed by env-var entries, then the compiled-in list.
 
 ## Operational Concepts
+
+### Internet Connectivity
+
+Most home connections are behind NAT, and Tor / SOCKS5 users have no listener
+at all, so peers usually cannot dial each other directly. AlterChat handles
+this with libp2p circuit relay v2. The switch is **Relay fallback**
+(`relay_fallback_enabled`), on by default.
+
+1. On startup the client dials its bootstrap nodes. Each bootstrap node runs a
+   relay v2 server.
+2. When a connected peer advertises the relay hop protocol, the client
+   reserves a circuit on it (`listen_on(<relay>/p2p-circuit)`). It holds up to
+   two reservations, bootstrap nodes first. Lost reservations are retried
+   every 30 seconds.
+3. The relayed address (`<relay addr>/p2p/<relay>/p2p-circuit`) becomes a
+   confirmed external address. Identify advertises it, and it is published in
+   a signed address record in the DHT under `/alterchat/addr/1/<peer id>`.
+   The record is a libp2p `PeerRecord` envelope signed by the peer's identity
+   key. DHT nodes and readers reject records that are forged, older than
+   24 hours, or older than the copy they already hold. LAN addresses are
+   never published.
+4. Every 30 seconds the client looks up the address records of friends it is
+   not connected to (each friend at most every two minutes). It then dials all
+   their addresses at once, direct and relayed, so whichever works first wins.
+5. In direct mode, DCUtR then tries to hole-punch a direct connection and
+   drops the relay when it succeeds.
+
+Reservations are made whenever relay fallback is on, without an AutoNAT
+probe. The bootstrap nodes run no AutoNAT server, AutoNAT cannot work through
+Tor or SOCKS5, and a reservation only costs one small stream on a connection
+the client already has. AlterChat reports `direct` reachability when a peer
+sees it on a public IP that belongs to one of its own interfaces, or when a
+peer connects in from a public IP.
+
+**Tor, SOCKS5 and I2P modes.** The relay transport sits on top of the proxy
+transport, so the client reaches the relay, and through it other peers, only
+via the proxy. Its relayed address contains the relay's address, never its own
+IP. Hole punching is turned off in these modes, so connections stay on the
+relay circuit. Tor dials host names only (`/dns4/<host>/tcp/<port>/p2p/<id>`),
+so Tor users need a DNS-named bootstrap/relay entry.
+
+**What the relay operator sees.** Relayed traffic is end-to-end encrypted
+(Noise between the two peers, then the AlterChat protocols on top), so the
+relay never sees message contents. It does see:
+
+- the peer ids of both ends of every circuit, and when circuits open and close;
+- byte counts and timing of the relayed traffic;
+- the IP address each peer connects from (in proxy modes, that is the Tor exit
+  or proxy address, not the user's own IP);
+- which peers keep reservations on it, and so are online.
+
+The relay can refuse service, drop circuits, or log this metadata. It cannot
+read or alter messages, and the signed address records stop it from
+redirecting peers to other identities. Relay circuits are limited in time and
+volume, so large file transfers over a relay can be cut off.
+
+**UI events.** `network-status` (`online` / `connecting` / `offline`) follows
+the number of open connections and pending dials. `network-reachability`
+(`direct` / `relayed` / `unreachable`) follows reservations and the direct
+heuristic. In SOCKS5/I2P mode, a dial that fails because the proxy is down
+raises `session-error` once every 5 minutes at most. In Tor mode,
+`session-error` fires after repeated dial failures with no connection left.
+When every connection is lost, bootstrap nodes are re-dialed every 30 seconds.
 
 ### Profiles
 

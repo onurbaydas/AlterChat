@@ -204,11 +204,16 @@ pub fn store_filtered_inbound(
     }
 }
 
-/// Storage-side filter for inbound Kademlia PUTs. Records outside the mailbox
+/// Storage-side filter for inbound Kademlia PUTs. Address records are checked
+/// by [`crate::nat::accept_addr_record`]; other records outside the mailbox
 /// prefix are accepted unchanged. Mailbox records must be validly signed by
 /// the sender named in them, bound to their key, fresh, and not older than
 /// the record already stored (no rollback).
 pub fn accept_dht_record(key: &[u8], value: &[u8], existing: Option<&[u8]>, now_ms: u64) -> bool {
+    if crate::nat::is_addr_record_key(key) {
+        // Signed peer address records (relay circuits), see `nat`.
+        return crate::nat::accept_addr_record(key, value, existing, now_ms / 1000);
+    }
     if !is_mailbox_key(key) {
         return true;
     }
