@@ -33,6 +33,8 @@ jobs:
         working-directory: alterchat-ui
       - name: Check invoke() arguments match Tauri command signatures
         run: python3 scripts/check_invokes.py .
+      - name: Check Tauri npm packages match Rust crates (major.minor)
+        run: python3 scripts/check_tauri_versions.py .
       - name: npm audit
         run: npm audit --audit-level=high
         working-directory: alterchat-ui

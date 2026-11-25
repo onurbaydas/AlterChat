@@ -25,6 +25,8 @@ jobs:
             echo "::error::Tag v$tag does not match the app version. Bump all three files first (see RELEASING.md)."
             exit 1
           fi
+      - name: Check Tauri npm packages match Rust crates
+        run: python3 scripts/check_tauri_versions.py .
 
   release:
     needs: verify
