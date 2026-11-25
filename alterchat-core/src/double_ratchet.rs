@@ -116,7 +116,7 @@ fn aead_ad(ad: &[u8], header: &DrHeader) -> Vec<u8> {
 /// bob_dh_pub: Bob'un ilk DH public key'i (signed prekey)
 pub fn init_alice(sk: [u8; 32], bob_dh_pub: [u8; 32]) -> DrState {
     // StaticSecret kullan — hem serialize edilebilir hem DH için yeniden kullanılabilir
-    let dh_send_secret = StaticSecret::random_from_rng(OsRng);
+    let dh_send_secret = StaticSecret::random_from_rng(&mut rand::rng());
     let dh_send_pub = *X25519PublicKey::from(&dh_send_secret).as_bytes();
     let dh_send_bytes = *dh_send_secret.as_bytes();
 
@@ -310,7 +310,7 @@ fn dh_ratchet(state: &mut DrState, header_dh: [u8; 32]) {
     state.ck_recv = Some(ck_recv);
 
     // Gönderim zinciri: yeni DH keypair üret
-    let new_secret = StaticSecret::random_from_rng(OsRng);
+    let new_secret = StaticSecret::random_from_rng(&mut rand::rng());
     let new_pub = *X25519PublicKey::from(&new_secret).as_bytes();
     let dh_out2 = dh(new_secret.as_bytes(), &header_dh);
     let (new_rk2, ck_send) = kdf_rk(&state.root_key, &dh_out2);
@@ -347,7 +347,7 @@ mod tests {
 
     fn make_pair() -> (DrState, DrState) {
         let sk = [42u8; 32];
-        let bob_secret = StaticSecret::random_from_rng(OsRng);
+        let bob_secret = StaticSecret::random_from_rng(&mut rand::rng());
         let bob_pub = *X25519PublicKey::from(&bob_secret).as_bytes();
 
         let alice = init_alice(sk, bob_pub);

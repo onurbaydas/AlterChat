@@ -5,6 +5,9 @@ import { detectLang, saveLang, strings, type Lang } from "../i18n";
 
 interface OnboardingWizardProps {
   onComplete: () => void;
+  /** When given, the language is owned by the parent (App) instead of the wizard. */
+  lang?: Lang;
+  onLangChange?: (lang: Lang) => void;
 }
 
 type Mode = "choose" | "create" | "open";
@@ -245,8 +248,9 @@ async function saveNickname(nick: string) {
   }
 }
 
-export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
-  const [lang, setLang] = useState<Lang>(detectLang());
+export function OnboardingWizard({ onComplete, lang: langProp, onLangChange }: OnboardingWizardProps) {
+  const [ownLang, setOwnLang] = useState<Lang>(detectLang());
+  const lang = langProp ?? ownLang;
   const t = strings(lang);
   const [mode, setMode] = useState<Mode>("choose");
 
@@ -265,8 +269,12 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
   const toggleLang = () => {
     const next: Lang = lang === "tr" ? "en" : "tr";
-    setLang(next);
-    saveLang(next);
+    if (onLangChange) {
+      onLangChange(next);
+    } else {
+      setOwnLang(next);
+      saveLang(next);
+    }
     setCopyLabel(strings(next).copy);
   };
 

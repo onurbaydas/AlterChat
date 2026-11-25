@@ -29,15 +29,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 alterchat-core = { path = "../../alterchat-core" }
 tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.32.1", features = ["bundled-sqlcipher-vendored-openssl", "functions"] }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl", "functions"] }
 dirs = "6.0.0"
 hex = "0.4.3"
 bincode = "1.3.3"
 sysinfo = "0.39.2"
 sha2 = "0.11.0"
 zeroize = "1.8.2"
-ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
-x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
 ml-kem = { version = "0.3.2", features = ["zeroize", "getrandom"] }
 getrandom = "0.3"
 tracing = "0.1"

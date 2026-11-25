@@ -12,6 +12,7 @@ import pkg from "../../package.json";
 import type {
   ChatMessage, PrivateMessage, Friend, SavedGroup, FullConfig, PeerSettings, RoomSettings,
 } from "../types";
+import { detectLang, strings } from "../i18n";
 
 type Args = Record<string, any> | undefined;
 
@@ -324,7 +325,7 @@ function handle(cmd: string, args: Args): unknown {
 
     // system / destructive: harmless in the demo
     case "panic_wipe":
-      alert("Demo: panik silme simüle edildi, hiçbir şey silinmedi. Demo yeniden başlıyor.\nDemo: panic wipe simulated, nothing was deleted. Restarting the demo.");
+      alert(strings(detectLang()).demoPanic);
       window.location.reload();
       return null;
     case "export_vault_encrypted": return fakeHex(Date.now() & 0xffff, 256);
@@ -341,7 +342,7 @@ function handle(cmd: string, args: Args): unknown {
     case "send_webrtc_signal":
       return null;
     case "open_received_file":
-      throw "Demo modunda dosya sistemi yok / no file system in the demo";
+      throw strings(detectLang()).demoNoFs;
     default:
       return null;
   }
@@ -350,6 +351,7 @@ function handle(cmd: string, args: Args): unknown {
 // ─── Banner ─────────────────────────────────────────────────────────────────
 
 function mountBanner() {
+  const t = strings(detectLang());
   const bar = document.createElement("div");
   bar.setAttribute("role", "note");
   bar.style.cssText = [
@@ -359,17 +361,17 @@ function mountBanner() {
     "background:#ffb000", "color:#111", "text-align:center", "box-shadow:0 2px 8px rgba(0,0,0,.5)",
   ].join(";");
   const text = document.createElement("span");
-  text.textContent = "Canlı demo — tarayıcıda sahte ağ ile çalışır, gerçek mesaj gönderilmez / Live demo — simulated network, no real messages";
+  text.textContent = t.demoBanner;
   const link = document.createElement("a");
   link.href = RELEASES_URL;
   link.target = "_blank";
   link.rel = "noopener";
-  link.textContent = "İndir / Download";
+  link.textContent = t.demoDownload;
   link.style.cssText = "color:#111;font-weight:600;text-decoration:underline";
   const close = document.createElement("button");
   close.type = "button";
   close.textContent = "×";
-  close.title = "Kapat / Close";
+  close.title = t.close;
   close.style.cssText = "position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:0;color:#111;font-size:16px;cursor:pointer;padding:0 4px";
   close.onclick = () => bar.remove();
   bar.append(text, link, close);

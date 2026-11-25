@@ -8,5 +8,5 @@ repository = "https://github.com/onurbaydas/AlterChat"
 publish = false
 
 [dependencies]
-libp2p = { version = "0.56.0", features = ["tcp", "quic", "noise", "yamux", "kad", "tokio", "macros", "ed25519", "identify", "ping", "relay"] }
+libp2p = { version = "0.57.1", features = ["tcp", "quic", "noise", "yamux", "kad", "tokio", "macros", "ed25519", "identify", "ping", "relay"] }
 tokio = { version = "1.52.3", features = ["full"] }

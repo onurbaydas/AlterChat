@@ -1,0 +1,41 @@
+name: Fuzz
+
+# Short weekly libFuzzer runs of the network-facing parsers. A crash fails the
+# job and uploads the reproducing input as an artifact.
+
+on:
+  schedule:
+    - cron: "17 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_p2p_request, fuzz_onion_packet]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6a52aad76a94a5fbc50d567bb5be24419801c1fb # nightly
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2
+        with:
+          tool: cargo-fuzz
+      - name: Run ${{ matrix.target }}
+        env:
+          SECONDS_PER_TARGET: ${{ inputs.seconds || '300' }}
+        run: cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time="$SECONDS_PER_TARGET"
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/

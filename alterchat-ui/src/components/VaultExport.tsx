@@ -1,11 +1,14 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { detectLang, strings, type Lang } from "../i18n";
 
 interface Props {
   onClose: () => void;
+  lang?: Lang;
 }
 
-export function VaultExport({ onClose }: Props) {
+export function VaultExport({ onClose, lang }: Props) {
+  const t = strings(lang ?? detectLang());
   const [mode, setMode] = useState<"export" | "import">("export");
   const [password, setPassword] = useState("");
   const [exportData, setExportData] = useState("");
@@ -14,23 +17,23 @@ export function VaultExport({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   async function doExport() {
-    if (!password) { setError("Password required"); return; }
+    if (!password) { setError(t.vaultPwRequired); return; }
     setError(null); setStatus(null);
     try {
       const hex = await invoke<string>("export_vault_encrypted", { exportPassword: password });
       setExportData(hex);
-      setStatus("Vault exported. Copy the hex string and import on your other device.");
+      setStatus(t.vaultExported);
     } catch (e: any) {
       setError(String(e));
     }
   }
 
   async function doImport() {
-    if (!password || !importData.trim()) { setError("Password and vault data required"); return; }
+    if (!password || !importData.trim()) { setError(t.vaultPwDataRequired); return; }
     setError(null); setStatus(null);
     try {
       await invoke("import_vault_encrypted", { encryptedHex: importData.trim(), importPassword: password });
-      setStatus("✓ Vault imported successfully. Restart to apply settings.");
+      setStatus(t.vaultImported);
     } catch (e: any) {
       setError(String(e));
     }
@@ -38,7 +41,7 @@ export function VaultExport({ onClose }: Props) {
 
   async function copyExport() {
     await navigator.clipboard.writeText(exportData);
-    setStatus("Copied to clipboard!");
+    setStatus(t.copiedToClipboard);
   }
 
   return (
@@ -52,11 +55,10 @@ export function VaultExport({ onClose }: Props) {
         boxShadow: "0 0 40px rgba(0,240,255,0.15)"
       }}>
         <h2 style={{ color: "#00f0ff", marginBottom: 6, fontSize: 18 }}>
-          🔑 Vault Export / Import
+          🔑 {t.vaultTitle}
         </h2>
         <p style={{ color: "#666", fontSize: 12, marginBottom: 20 }}>
-          Transfer your identity and settings to another device. Vault is encrypted with your password —
-          only you can decrypt it. No servers involved.
+          {t.vaultIntro}
         </p>
 
         {/* Tab Switch */}
@@ -69,20 +71,20 @@ export function VaultExport({ onClose }: Props) {
               border: `1px solid ${mode === m ? "#00f0ff" : "#333"}`,
               fontWeight: "bold", textTransform: "uppercase", fontSize: 12
             }}>
-              {m === "export" ? "📤 Export" : "📥 Import"}
+              {m === "export" ? `📤 ${t.vaultExportTab}` : `📥 ${t.vaultImportTab}`}
             </button>
           ))}
         </div>
 
         <div style={{ marginBottom: 16 }}>
           <label style={{ color: "#aaa", fontSize: 12, display: "block", marginBottom: 6 }}>
-            Encryption Password
+            {t.vaultPw}
           </label>
           <input
             type="password"
             value={password}
             onChange={e => setPassword(e.target.value)}
-            placeholder="Strong password for vault encryption"
+            placeholder={t.vaultPwPh}
             style={{
               width: "100%", background: "#050a0f", border: "1px solid #1a2a3a",
               borderRadius: 6, padding: "10px", color: "#fff", fontSize: 13,
@@ -98,7 +100,7 @@ export function VaultExport({ onClose }: Props) {
               border: "none", borderRadius: 6, padding: "10px",
               cursor: "pointer", fontWeight: "bold", marginBottom: 12
             }}>
-              Export Encrypted Vault
+              {t.vaultExportBtn}
             </button>
             {exportData && (
               <div>
@@ -115,7 +117,7 @@ export function VaultExport({ onClose }: Props) {
                   border: "1px solid #00f0ff", borderRadius: 6, padding: "8px",
                   cursor: "pointer", fontSize: 12
                 }}>
-                  Copy to Clipboard
+                  {t.copyToClipboard}
                 </button>
               </div>
             )}
@@ -124,12 +126,12 @@ export function VaultExport({ onClose }: Props) {
           <>
             <div style={{ marginBottom: 12 }}>
               <label style={{ color: "#aaa", fontSize: 12, display: "block", marginBottom: 6 }}>
-                Vault Data (hex)
+                {t.vaultData}
               </label>
               <textarea
                 value={importData}
                 onChange={e => setImportData(e.target.value)}
-                placeholder="Paste vault hex data here..."
+                placeholder={t.vaultDataPh}
                 style={{
                   width: "100%", height: 80, background: "#050a0f",
                   border: "1px solid #1a2a3a", borderRadius: 6, color: "#ccc",
@@ -142,7 +144,7 @@ export function VaultExport({ onClose }: Props) {
               border: "none", borderRadius: 6, padding: "10px",
               cursor: "pointer", fontWeight: "bold"
             }}>
-              Import Vault
+              {t.vaultImportBtn}
             </button>
           </>
         )}
@@ -156,7 +158,7 @@ export function VaultExport({ onClose }: Props) {
         {error && (
           <div style={{ marginTop: 12, color: "#cc4444", fontSize: 12, padding: 8,
             background: "rgba(204,68,68,0.1)", borderRadius: 4 }}>
-            Error: {error}
+            {t.errorPrefix}{error}
           </div>
         )}
 
@@ -165,7 +167,7 @@ export function VaultExport({ onClose }: Props) {
           border: "1px solid #333", borderRadius: 6, padding: "8px 20px",
           cursor: "pointer", width: "100%"
         }}>
-          Close
+          {t.close}
         </button>
       </div>
     </div>

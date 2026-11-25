@@ -1,0 +1,47 @@
+name: Coverage
+
+# Line coverage of the Rust workspace (alterchat-core, bootstrap).
+# The lcov report is attached to the run and summarised on the run page.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "alterchat-core/**"
+      - "alterchat-bootstrap/**"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@3cfd829add0beb9cf7406e52147d74ad3db19d01 # 1.96.0
+        with:
+          toolchain: 1.96.0
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Measure coverage
+        run: |
+          cargo llvm-cov -p alterchat-core -p alterchat-bootstrap --lcov --output-path lcov.info
+          {
+            echo '## Coverage'
+            echo '```'
+            cargo llvm-cov report -p alterchat-core -p alterchat-bootstrap --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lcov
+          path: lcov.info

@@ -15,10 +15,10 @@ argon2 = "0.5.3"
 automerge = "0.9.0"
 base64 = "0.22.1"
 bincode = "1.3.3"
-ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 hkdf = "0.13.0"
 hmac = { version = "0.13.0", features = ["zeroize"] }
-libp2p = { version = "0.56.0", features = ["tcp", "dns", "websocket", "noise", "yamux", "kad", "gossipsub", "tokio", "macros", "ed25519", "identify", "ping", "mdns", "request-response", "cbor", "relay", "dcutr", "quic"] }
+libp2p = { version = "0.57.1", features = ["tcp", "dns", "websocket", "noise", "yamux", "kad", "gossipsub", "tokio", "macros", "ed25519", "identify", "ping", "mdns", "request-response", "cbor", "relay", "dcutr", "quic"] }
 libp2p-community-tor = { path = "../libp2p-community-tor" }
 ml-kem = { version = "0.3.2", features = ["zeroize", "getrandom"] }
 pbkdf2 = "0.13.0"
@@ -32,8 +32,11 @@ tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 wasmi = { version = "2.0.2", default-features = false, features = ["std", "validate", "stable", "auto-dispatch"] }
-x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
 zeroize = { version = "1.8.2", features = ["derive"] }
 
 [dev-dependencies]
+# arti links SQLite through rusqlite; the app enables bundled SQLCipher. This
+# lets `cargo test -p alterchat-core` link on its own, without a system SQLite.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 wat = "1.251.0"

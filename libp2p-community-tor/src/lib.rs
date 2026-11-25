@@ -93,9 +93,13 @@ pub enum AddressConversion {
 impl TorTransport {
     /// Creates a new `TorClientBuilder`.
     ///
+    /// Installs the `aws-lc-rs` rustls `CryptoProvider` as the process default
+    /// if none has been installed yet: Arti's rustls runtime requires one.
+    ///
     /// # Panics
     /// Panics if the current runtime is not a `TokioRustlsRuntime`.
     pub fn builder() -> TorClientBuilder<TokioRustlsRuntime> {
+        install_crypto_provider();
         let runtime =
             TokioRustlsRuntime::current().expect("Couldn't get the current tokio rustls runtime");
         TorClient::with_runtime(runtime)
@@ -120,7 +124,7 @@ impl TorTransport {
         builder: &TorClientBuilder<TokioRustlsRuntime>,
         conversion_mode: AddressConversion,
     ) -> Result<Self, TorError> {
-        let client = Arc::new(builder.create_unbootstrapped()?);
+        let client = builder.create_unbootstrapped()?;
 
         Ok(Self {
             client,
@@ -129,6 +133,7 @@ impl TorTransport {
     }
 
     /// Builds a `TorTransport` from an existing Arti `TorClient`.
+    #[must_use]
     pub fn from_client(
         client: Arc<TorClient<TokioRustlsRuntime>>,
         conversion_mode: AddressConversion,
@@ -152,6 +157,16 @@ impl TorTransport {
     pub fn with_address_conversion(mut self, conversion_mode: AddressConversion) -> Self {
         self.conversion_mode = conversion_mode;
         self
+    }
+}
+
+/// Installs the `aws-lc-rs` provider as the process-wide rustls default unless
+/// the application already installed one. Idempotent.
+fn install_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        // Losing a race against another installer is fine: some provider is
+        // installed either way.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     }
 }
 

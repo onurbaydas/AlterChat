@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { detectLang, strings } from "../i18n";
+import { detectLang, strings, type Lang } from "../i18n";
 
 /**
  * Checks GitHub Releases for a signed update once at startup and offers it.
  * Updates are verified against the public key in tauri.conf.json before
  * they are installed. Network or check failures are silent.
  */
-export function UpdateChecker() {
-  const t = strings(detectLang());
+export function UpdateChecker({ lang }: { lang?: Lang } = {}) {
+  const t = strings(lang ?? detectLang());
   const [update, setUpdate] = useState<Update | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
