@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 aead = "0.5.2"
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.1"
 anyhow = "1.0.102"
 argon2 = "0.5.3"
 automerge = "0.9.0"
