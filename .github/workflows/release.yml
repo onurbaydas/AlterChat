@@ -101,14 +101,27 @@ jobs:
         working-directory: alterchat-ui
         run: npm ci
 
+      # Secrets pasted from a shell often carry a trailing CR/LF, which makes
+      # the key undecodable or the password wrong. Strip them once here.
+      - name: Normalise updater signing secrets
+        shell: bash
+        env:
+          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          RAW_PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          key=$(printf '%s' "$RAW_KEY" | tr -d '\r\n')
+          pass=$(printf '%s' "$RAW_PASS" | tr -d '\r\n')
+          echo "::add-mask::$key"
+          echo "::add-mask::$pass"
+          echo "TAURI_SIGNING_PRIVATE_KEY=$key" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$pass" >> "$GITHUB_ENV"
+
       - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signs the update bundles; the app verifies them with the public
-          # key in tauri.conf.json before installing an update.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # TAURI_SIGNING_PRIVATE_KEY(_PASSWORD) come from the step above; the
+          # app verifies update bundles with the public key in tauri.conf.json.
         with:
           projectPath: alterchat-ui
           args: ${{ matrix.args }}
