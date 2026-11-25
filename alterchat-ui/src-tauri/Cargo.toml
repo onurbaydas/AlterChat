@@ -39,6 +39,6 @@ zeroize = "1.8.2"
 ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
 ml-kem = { version = "0.3.2", features = ["zeroize", "getrandom"] }
-getrandom = "0.3"
+getrandom = "0.4"
 tracing = "0.1"
 
