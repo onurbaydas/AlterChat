@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Güvenlik açığı bildir / Report a vulnerability
+    url: https://github.com/onurbaydas/AlterChat/security/advisories/new
+    about: Güvenlik sorunlarını gizli bildirin / Report security issues privately
+  - name: Soru ve tartışma / Questions & discussion
+    url: https://github.com/onurbaydas/AlterChat/discussions
+    about: Kullanım soruları ve fikirler için Discussions / Usage questions and ideas
+  - name: Canlı demo / Live demo
+    url: https://onurbaydas.github.io/AlterChat/
+    about: Uygulamayı tarayıcıda deneyin / Try the app in your browser

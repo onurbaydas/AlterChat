@@ -29,19 +29,30 @@ version tag is pushed. Nothing has to be compiled locally.
 
 ## Cutting a release
 
-1. Bump the version in `alterchat-ui/src-tauri/tauri.conf.json` and
-   `alterchat-ui/package.json` (they must match), and move the
-   `[Unreleased]` notes in `CHANGELOG.md` under the new version.
+1. Set the version everywhere at once (package.json, package-lock.json,
+   tauri.conf.json, src-tauri/Cargo.toml, and a new CHANGELOG section):
+
+   ```bash
+   python scripts/bump_version.py 0.1.1
+   ```
+
+   Edit the new CHANGELOG section if needed.
 2. Commit, then tag and push:
 
    ```bash
+   git commit -am "Release v0.1.1"
    git tag v0.1.1
-   git push origin main --tags
+   git push origin main v0.1.1
    ```
 
-3. The workflow builds Windows (NSIS/MSI), macOS (DMG) and Linux
-   (AppImage/deb) bundles, signs the updater artifacts, publishes the release
-   with `latest.json`, and attaches the bootstrap binary with `SHA256SUMS`.
+   The release workflow first checks that the tag matches all version fields
+   and stops if they differ.
+3. The workflow builds Windows (NSIS/MSI), a universal macOS DMG and Linux
+   (AppImage/deb/rpm) bundles, signs the updater artifacts, publishes the
+   release with `latest.json`, attaches the bootstrap binary, pushes
+   `ghcr.io/onurbaydas/alterchat-bootstrap:<version>` and `:latest`, and
+   finally uploads `SHA256SUMS` for every asset plus a signed build-provenance
+   attestation (`gh attestation verify <file> -R onurbaydas/AlterChat`).
 4. Running apps see the update on their next start and offer to install it.
 
 ## Building an installer locally

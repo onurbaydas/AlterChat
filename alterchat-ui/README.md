@@ -74,6 +74,18 @@ Build a Tauri bundle:
 npm run tauri build
 ```
 
+Build the browser live demo (simulated backend in `src/demo/mockBackend.ts`,
+published to GitHub Pages by `.github/workflows/pages.yml`):
+
+```bash
+npm run build:demo     # output: dist-demo/, base path /AlterChat/
+npm run preview:demo   # serve it locally
+```
+
+The demo code is loaded only when `VITE_DEMO` is set (`.env.demo`), so it is
+not part of the desktop bundle. When you add a new `invoke()` command, add a
+handler to the mock as well so the demo keeps working.
+
 ## Backend Command Surface
 
 The frontend communicates with Rust through explicit Tauri commands. Important

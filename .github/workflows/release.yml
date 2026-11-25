@@ -9,11 +9,39 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: Verify tag matches app version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare tag with tauri.conf.json / package.json / Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf=$(jq -r .version alterchat-ui/src-tauri/tauri.conf.json)
+          pkg=$(jq -r .version alterchat-ui/package.json)
+          crate=$(grep -m1 '^version' alterchat-ui/src-tauri/Cargo.toml | cut -d'"' -f2)
+          echo "tag=$tag tauri.conf=$conf package.json=$pkg Cargo.toml=$crate"
+          if [ "$tag" != "$conf" ] || [ "$tag" != "$pkg" ] || [ "$tag" != "$crate" ]; then
+            echo "::error::Tag v$tag does not match the app version. Bump all three files first (see RELEASING.md)."
+            exit 1
+          fi
+
   release:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        include:
+          # One universal macOS build runs on both Apple Silicon and Intel.
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+            targets: ""
+          - platform: windows-latest
+            args: ""
+            targets: ""
     runs-on: ${{ matrix.platform }}
     env:
       # Optional code-signing secrets. When they are not configured the
@@ -34,7 +62,11 @@ jobs:
         with:
           node-version: 22
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Same version as rust-toolchain.toml, so the extra targets are added
+      # to the toolchain that actually builds.
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.targets }}
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -77,9 +109,26 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: alterchat-ui
+          args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
           releaseName: "AlterChat ${{ github.ref_name }}"
-          releaseBody: "See CHANGELOG.md for details. Verify downloads with the published SHA256SUMS."
+          releaseBody: |
+            ## İndir / Download
+
+            | Sistem / OS | Dosya / File |
+            | --- | --- |
+            | Windows 10/11 | `AlterChat_*_x64-setup.exe` (yönetici izni gerekmez / no admin needed) |
+            | macOS (Apple Silicon / Intel) | `AlterChat_*.dmg` |
+            | Linux | `AlterChat_*.AppImage` veya/or `.deb` / `.rpm` |
+            | Bootstrap düğümü / node | `alterchat-bootstrap-linux-x86_64` veya/or `ghcr.io/onurbaydas/alterchat-bootstrap:${{ github.ref_name }}` |
+
+            Zaten kuruluysa uygulama bu sürümü kendisi önerir. / Existing installs offer this update automatically.
+
+            **Doğrulama / Verify:** `sha256sum -c SHA256SUMS` — ayrıca/also `gh attestation verify <file> -R onurbaydas/AlterChat`.
+
+            Önce denemek için / Try first: https://onurbaydas.github.io/AlterChat/
+
+            Değişiklikler / Changes: [CHANGELOG.md](https://github.com/onurbaydas/AlterChat/blob/${{ github.ref_name }}/CHANGELOG.md)
           # Published (not draft) so /releases/latest/download/latest.json
           # resolves for the in-app updater.
           releaseDraft: false
@@ -92,14 +141,74 @@ jobs:
     needs: release
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
       - run: cargo build --release -p alterchat-bootstrap
-      - name: Package and checksum
+      - name: Package
         run: |
           mkdir dist
           cp target/release/alterchat-bootstrap dist/alterchat-bootstrap-linux-x86_64
-          cd dist && sha256sum * > SHA256SUMS
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" dist/* --clobber
+
+  checksums:
+    name: Checksums and provenance
+    runs-on: ubuntu-22.04
+    needs: [release, bootstrap]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir assets && cd assets
+          gh release download "${{ github.ref_name }}" -R "${{ github.repository }}" \
+            --pattern '*' --skip-existing
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-checksums: assets/SHA256SUMS
+      - name: Upload SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" assets/SHA256SUMS -R "${{ github.repository }}" --clobber
+
+  docker:
+    name: Bootstrap Docker image (ghcr.io)
+    runs-on: ubuntu-22.04
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/alterchat-bootstrap
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: alterchat-bootstrap/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

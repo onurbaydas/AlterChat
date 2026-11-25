@@ -1,0 +1,28 @@
+name: Özellik isteği / Feature request
+description: Yeni bir özellik ya da iyileştirme önerin / Suggest a feature or improvement
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Sorun / Problem
+      description: Bu özellik hangi sorunu çözüyor? / What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Öneri / Proposal
+      description: Nasıl çalışmasını istersiniz? / How should it work?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatifler / Alternatives considered
+  - type: textarea
+    id: security
+    attributes:
+      label: Gizlilik ve güvenlik etkisi / Privacy & security impact
+      description: Merkezi bir sunucu, yeni metadata sızıntısı veya yeni bir saldırı yüzeyi gerektiriyor mu? / Does it need a central server, leak new metadata, or add attack surface?

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-25
+
+First public release.
+
+### Added (project infrastructure)
+
+- Browser live demo on GitHub Pages: the real interface running against a
+  simulated in-browser network.
+- CodeQL (Rust, TypeScript, Actions) and OpenSSF Scorecard scans; working
+  `cargo audit` job.
+- Bootstrap node Docker image on `ghcr.io/onurbaydas/alterchat-bootstrap`
+  (`:edge` from main, `:X.Y.Z`/`:latest` from releases).
+- Release workflow refuses tags that do not match the app version.
+- Issue forms (Turkish/English), CODEOWNERS, SUPPORT.md, grouped Dependabot
+  updates, stale-issue automation, categorised release notes.
+- Universal macOS build, SHA256SUMS for every release asset, signed build
+  provenance, `scripts/bump_version.py`.
+
+### Fixed (0.1.0)
+
+- Room messages were filed under the room that was open at login; they now go
+  to the currently joined room.
+- Trust graph showed no edges (it expected JSON strings, the backend returns
+  objects).
+- Debug builds no longer generate full debug info for dependencies
+  (`target/debug` went from ~38 GB to a few GB); release binaries are stripped.
+
+### Security (0.1.0)
+
+- Lockfile refresh fixes 27 RustSec advisories (h2, tokio, zstd-safe, cookie,
+  crossbeam-epoch, anyhow, rustix, …). Remaining advisories need the libp2p
+  0.57 and arti upgrades and are listed with reasons in `.cargo/audit.toml`
+  (issues #34, #35).
+
 ### Added (distribution)
 
 - In-app auto-update: the app checks GitHub Releases on startup and offers

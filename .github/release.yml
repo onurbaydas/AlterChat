@@ -1,0 +1,15 @@
+# Categories for GitHub's auto-generated release notes.
+changelog:
+  exclude:
+    labels: ["skip-changelog"]
+  categories:
+    - title: Güvenlik / Security
+      labels: ["security"]
+    - title: Yeni özellikler / Features
+      labels: ["enhancement", "feature"]
+    - title: Hata düzeltmeleri / Bug fixes
+      labels: ["bug"]
+    - title: Bağımlılıklar / Dependencies
+      labels: ["dependencies"]
+    - title: Diğer / Other
+      labels: ["*"]

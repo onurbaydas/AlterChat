@@ -1,0 +1,53 @@
+name: Live demo (GitHub Pages)
+
+# Builds the desktop UI against a simulated in-browser backend and publishes it
+# to https://onurbaydas.github.io/AlterChat/. No real network traffic happens
+# in the demo.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "alterchat-ui/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: alterchat-ui/package-lock.json
+      - run: npm ci
+        working-directory: alterchat-ui
+      - run: npm run build:demo
+        working-directory: alterchat-ui
+      - name: SPA fallback
+        run: cp alterchat-ui/dist-demo/index.html alterchat-ui/dist-demo/404.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: alterchat-ui/dist-demo
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

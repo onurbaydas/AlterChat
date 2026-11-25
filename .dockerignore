@@ -1,0 +1,9 @@
+target/
+**/node_modules/
+alterchat-ui/dist/
+alterchat-ui/dist-demo/
+fuzz/target/
+.git/
+.claude/
+*.db
+*.bin

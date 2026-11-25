@@ -44,6 +44,13 @@ function App() {
 
   // Layout state
   const [activeContext, setActiveContext] = useState<{type: 'global'|'group'|'friend', id: string}>({type: 'global', id: 'alterchat-global'});
+  // The backend has one joined room at a time; room events belong to the most
+  // recently opened group. Kept in a ref so the event listeners (registered
+  // once at login) see the current value instead of the one from login time.
+  const currentRoomRef = useRef<string>('alterchat-global');
+  useEffect(() => {
+    if (activeContext.type === 'group') currentRoomRef.current = activeContext.id;
+  }, [activeContext]);
 
   // SFU Election State
   const [myCapacity, setMyCapacity] = useState(0);
@@ -239,7 +246,7 @@ function App() {
       }
 
       setChannelMessages(prev => {
-        const chan = activeContext.type === 'group' ? activeContext.id : 'alterchat-global';
+        const chan = currentRoomRef.current;
         const msgs = prev[chan] || [];
         return { ...prev, [chan]: [...msgs, e.payload] };
       });
@@ -252,7 +259,7 @@ function App() {
     });
 
     const unlistenHistory = listen<ChatMessage[]>("chat-history", (event) => {
-        const currentTopic = activeContext.type === 'group' ? activeContext.id : 'alterchat-global';
+        const currentTopic = currentRoomRef.current;
         setChannelMessages(prev => {
         return { ...prev, [currentTopic]: event.payload };
       });

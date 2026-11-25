@@ -5,12 +5,46 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels: ["dependencies", "rust"]
+    groups:
+      # Patch/minor bumps land as one PR per week instead of many.
+      rust-minor:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Major bumps of the crypto stack change APIs and must be migrated by
+      # hand together with the rest of the dalek ecosystem.
+      - dependency-name: "x25519-dalek"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "ed25519-dalek"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "curve25519-dalek"
+        update-types: ["version-update:semver-major"]
+      # libp2p and automerge majors need protocol review.
+      - dependency-name: "libp2p*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "automerge"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: npm
     directory: "/alterchat-ui"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels: ["dependencies", "javascript"]
+    groups:
+      npm-minor:
+        update-types: ["minor", "patch"]
+      tauri:
+        patterns: ["@tauri-apps/*"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
+    labels: ["dependencies", "ci"]
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: "/alterchat-bootstrap"
+    schedule:
+      interval: monthly
+    labels: ["dependencies", "docker"]

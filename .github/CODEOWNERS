@@ -1,0 +1,7 @@
+# Default reviewer for everything
+* @onurbaydas
+
+# Security-critical paths
+/alterchat-core/src/       @onurbaydas
+/.github/workflows/        @onurbaydas
+/alterchat-ui/src-tauri/tauri.conf.json  @onurbaydas

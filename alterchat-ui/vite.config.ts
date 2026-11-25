@@ -5,8 +5,14 @@ import react from "@vitejs/plugin-react";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig(async ({ mode }) => ({
   plugins: [react()],
+
+  // `vite build --mode demo`: static browser demo for GitHub Pages
+  // (project site under /AlterChat/). Other modes keep the Tauri defaults.
+  ...(mode === "demo"
+    ? { base: "/AlterChat/", build: { outDir: "dist-demo" } }
+    : {}),
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

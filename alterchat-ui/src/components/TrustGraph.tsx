@@ -29,9 +29,11 @@ export function TrustGraph({ myPeerId, friends, onClose }: Props) {
   useEffect(() => {
     async function load() {
       try {
-        const rawEdges = await invoke<string[]>("list_trust_edges");
-        const parsed: TrustEdge[] = rawEdges.flatMap(json => {
-          try { return [JSON.parse(json)]; } catch { return []; }
+        // The command returns TrustEdge objects; accept JSON strings as well.
+        const rawEdges = await invoke<Array<TrustEdge | string>>("list_trust_edges");
+        const parsed: TrustEdge[] = rawEdges.flatMap(edge => {
+          if (typeof edge !== "string") return [edge];
+          try { return [JSON.parse(edge) as TrustEdge]; } catch { return []; }
         });
         setEdges(parsed);
 

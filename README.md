@@ -4,10 +4,18 @@
   <p><strong>Local-first, peer-to-peer, zero-trust communication workspace</strong></p>
 
   [![CI](https://github.com/onurbaydas/AlterChat/actions/workflows/ci.yml/badge.svg)](https://github.com/onurbaydas/AlterChat/actions/workflows/ci.yml)
-  [![Rust](https://img.shields.io/badge/Rust-1.95%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+  [![CodeQL](https://github.com/onurbaydas/AlterChat/actions/workflows/codeql.yml/badge.svg)](https://github.com/onurbaydas/AlterChat/actions/workflows/codeql.yml)
+  [![Release](https://img.shields.io/github/v/release/onurbaydas/AlterChat?style=flat-square)](https://github.com/onurbaydas/AlterChat/releases/latest)
+  [![Downloads](https://img.shields.io/github/downloads/onurbaydas/AlterChat/total?style=flat-square)](https://github.com/onurbaydas/AlterChat/releases)
+  [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/onurbaydas/AlterChat/badge)](https://scorecard.dev/viewer/?uri=github.com/onurbaydas/AlterChat)
+  [![Rust](https://img.shields.io/badge/Rust-1.96-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
   [![Tauri](https://img.shields.io/badge/Tauri-v2-blue?style=flat-square&logo=tauri)](https://tauri.app/)
   [![React](https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react)](https://react.dev/)
   [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square)](LICENSE)
+
+  **[⬇ İndir / Download](https://github.com/onurbaydas/AlterChat/releases/latest)** ·
+  **[▶ Canlı demo / Live demo](https://onurbaydas.github.io/AlterChat/)** ·
+  **[💬 Discussions](https://github.com/onurbaydas/AlterChat/discussions)**
 </div>
 
 ---
@@ -69,6 +77,10 @@ updates on startup and installs them with one click.
 
 > Windows may show a SmartScreen "unknown publisher" warning until the
 > installer is code-signed: choose *More info → Run anyway*.
+
+**Önce denemek ister misiniz? / Try before installing:** the
+[live demo](https://onurbaydas.github.io/AlterChat/) runs the real interface in
+your browser against a simulated network. Nothing leaves your browser.
 
 Maintainers: see [RELEASING.md](RELEASING.md).
 
@@ -380,7 +392,11 @@ their listen addresses to the DHT routing table. Its identity is stored in
 
 ```bash
 cargo run --package alterchat-bootstrap --release
-# or
+# or the prebuilt image
+docker run -d --name alterchat-bootstrap --restart unless-stopped \
+  -p 4001:4001/tcp -p 4001:4001/udp -v alterchat-boot:/data \
+  ghcr.io/onurbaydas/alterchat-bootstrap:latest
+# or build locally
 docker compose -f bootstrap/docker-compose.yml up -d
 ```
 
@@ -573,6 +589,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full process.
 - [SECURITY.md](SECURITY.md): private vulnerability reporting policy.
 - [RELEASING.md](RELEASING.md): building and publishing releases, updater keys.
 - [CONTRIBUTING.md](CONTRIBUTING.md): development and review workflow.
+- [SUPPORT.md](SUPPORT.md): where to ask questions and report problems.
 - [alterchat-ui/README.md](alterchat-ui/README.md): desktop frontend details.
 - [libp2p-community-tor/README.md](libp2p-community-tor/README.md): Tor
   transport notes and misuse warnings.

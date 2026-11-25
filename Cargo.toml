@@ -8,3 +8,16 @@ members = ["alterchat-bootstrap",
 #   cargo +nightly fuzz run fuzz_p2p_request -- -max_total_time=60
 exclude = ["fuzz"]
 resolver = "2"
+
+# Full debug info for ~950 dependencies makes target/debug grow to ~40 GB.
+# Keep line tables for our own crates (readable backtraces) and none for
+# dependencies; this cuts debug builds to a fraction of the size and speeds up
+# linking. Override locally with CARGO_PROFILE_DEV_DEBUG=true if needed.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = true

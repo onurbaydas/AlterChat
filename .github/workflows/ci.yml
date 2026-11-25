@@ -86,9 +86,12 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-22.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      # Ignored advisories and their justification live in .cargo/audit.toml.
+      # Fails on any vulnerability not listed there; unmaintained/unsound
+      # notices are reported but do not fail the job.
+      - run: cargo audit
