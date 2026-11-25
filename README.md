@@ -1,6 +1,5 @@
 <div align="center">
-  <h1>بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ</h1>
-  <h2>AlterChat</h2>
+  <h1>AlterChat</h1>
   <p><strong>Local-first, peer-to-peer, zero-trust communication workspace</strong></p>
 
   [![CI](https://github.com/onurbaydas/AlterChat/actions/workflows/ci.yml/badge.svg)](https://github.com/onurbaydas/AlterChat/actions/workflows/ci.yml)

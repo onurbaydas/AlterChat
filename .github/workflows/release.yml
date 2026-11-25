@@ -47,13 +47,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
     env:
       # Optional code-signing secrets. When they are not configured the
-      # release is still built, just unsigned.
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # release is still built, just unsigned. The Apple values are NOT set
+      # under their APPLE_* names here: Tauri starts codesigning as soon as
+      # APPLE_CERTIFICATE exists, even when it is empty. The step below
+      # exports them only when the secret is actually configured.
+      MAC_CERT: ${{ secrets.APPLE_CERTIFICATE }}
       WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
@@ -77,16 +75,25 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev libssl-dev patchelf
 
-      - name: Import Apple certificate
-        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+      # Tauri imports the certificate and notarizes by itself once these
+      # variables exist.
+      - name: Enable Apple code signing (only if configured)
+        if: runner.os == 'macOS' && env.MAC_CERT != ''
+        env:
+          C_PASS: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          C_IDENT: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          C_ID: ${{ secrets.APPLE_ID }}
+          C_PW: ${{ secrets.APPLE_PASSWORD }}
+          C_TEAM: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" build.keychain
-          rm certificate.p12
+          {
+            echo "APPLE_CERTIFICATE<<EOF_CERT"; echo "$MAC_CERT"; echo "EOF_CERT"
+            echo "APPLE_CERTIFICATE_PASSWORD=$C_PASS"
+            echo "APPLE_SIGNING_IDENTITY=$C_IDENT"
+            echo "APPLE_ID=$C_ID"
+            echo "APPLE_PASSWORD=$C_PW"
+            echo "APPLE_TEAM_ID=$C_TEAM"
+          } >> "$GITHUB_ENV"
 
       - name: Import Windows certificate
         if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
