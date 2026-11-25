@@ -21,7 +21,7 @@ pub fn encrypt_for_peer(
     let recipient_pubkey = X25519PublicKey::from(*recipient_pubkey_bytes);
 
     // Generate an ephemeral X25519 keypair for Alice
-    let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
+    let ephemeral_secret = EphemeralSecret::random_from_rng(&mut rand::rng());
     let ephemeral_pubkey = X25519PublicKey::from(&ephemeral_secret);
 
     // Perform Diffie-Hellman to get the shared secret

@@ -9,6 +9,7 @@ import { VaultExport } from "./components/VaultExport";
 import { NetworkStatusBadge } from "./components/NetworkStatusBadge";
 import type { NetworkStatus, Reachability } from "./components/NetworkStatusBadge";
 import { UpdateChecker } from "./components/UpdateChecker";
+import { detectLang, saveLang, strings, type Lang } from "./i18n";
 import "./index.css";
 
 import { deriveMediaKey, makeE2EESenderTransform, makeE2EEReceiverTransform } from "./webrtc";
@@ -32,6 +33,17 @@ type FileTransferItem = {
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // UI language. Event listeners below are registered once per login, so they
+  // read the strings through a ref to follow later language switches.
+  const [lang, setLang] = useState<Lang>(detectLang());
+  const t = strings(lang);
+  const tRef = useRef(t);
+  tRef.current = t;
+  const changeLang = (next: Lang) => {
+    setLang(next);
+    saveLang(next);
+  };
 
   const [myNick, setMyNick] = useState<string>("");
   const [myOfflinePubkey, setMyOfflinePubkey] = useState<string>("");
@@ -385,16 +397,16 @@ function App() {
     // Backend errors that previously failed silently
     const unlistenSessionError = listen<string>("session-error", (e) => {
       setNetworkStatus("offline");
-      alert(`Session error: ${e.payload}`);
+      alert(tRef.current.sessionError(e.payload));
     });
     const unlistenRoomJoinFailed = listen<string>("room-join-failed", (e) => {
-      alert(`Could not open room "${e.payload}": wrong room password?`);
+      alert(tRef.current.roomJoinFailed(e.payload));
     });
     const unlistenDmNeedsKey = listen<string>("dm-requires-pubkey", (e) => {
-      alert(`Message to ${e.payload.substring(0, 8)}… was not sent: direct messages are only possible to friends with a valid peer id.`);
+      alert(tRef.current.dmNeedsKey(e.payload.substring(0, 8)));
     });
     const unlistenDmFailed = listen<{ peer_id: string; reason: string }>("dm-delivery-failed", (e) => {
-      alert(`Message to ${e.payload.peer_id.substring(0, 8)}… could not be delivered: ${e.payload.reason}.`);
+      alert(tRef.current.dmFailed(e.payload.peer_id.substring(0, 8), e.payload.reason));
     });
     const updateTransfer = (id: string, patch: Partial<FileTransferItem>) =>
       setFileTransfers(prev => prev[id] ? { ...prev, [id]: { ...prev[id], ...patch } } : prev);
@@ -418,7 +430,7 @@ function App() {
       updateTransfer(e.payload.transfer_id, { status: 'failed', reason: e.payload.reason });
     });
     const unlistenDmBlocked = listen<string>("private-message-blocked", (e) => {
-      alert(`Message to ${e.payload.substring(0, 8)}… blocked by your trust settings.`);
+      alert(tRef.current.dmBlocked(e.payload.substring(0, 8)));
     });
 
     return () => {
@@ -808,7 +820,7 @@ function App() {
         setFileMaxMb(fileSettings.max_file_size_mb);
         setFileMaxConcurrent(fileSettings.max_concurrent_transfers);
         setMyNick(settingsNick);
-        alert("Ayarlar kaydedildi. Ağ transport değişiklikleri sonraki oturumda geçerli olur.");
+        alert(t.settingsSaved);
         setShowSettings(false);
     } catch (err) { console.error(err); }
   };
@@ -817,22 +829,22 @@ function App() {
     try {
       const json = await invoke<string>("export_profile_config");
       await navigator.clipboard.writeText(json);
-      alert("Config JSON panoya kopyalandı.");
+      alert(t.configCopied);
     } catch (err) {
       console.error(err);
-      alert("Config export başarısız.");
+      alert(t.configExportFailed);
     }
   };
 
   const handleImportConfig = async () => {
-    const json = window.prompt("Config JSON yapıştır:");
+    const json = window.prompt(t.configPastePrompt);
     if (!json) return;
     try {
       await invoke("import_profile_config", { json });
-      alert("Config içe aktarıldı. Yeniden girişte tüm ayarlar yüklenecek.");
+      alert(t.configImported);
     } catch (err) {
       console.error(err);
-      alert("Config import başarısız.");
+      alert(t.configImportFailed);
     }
   };
 
@@ -891,15 +903,15 @@ function App() {
         maxUses: 25,
       });
       await navigator.clipboard.writeText(token);
-      alert("Invite token copied to clipboard.");
+      alert(t.inviteCopied);
     } catch (err) {
       console.error(err);
-      alert("Invite creation failed.");
+      alert(t.inviteCreateFailed);
     }
   };
 
   const handleAcceptInvite = async () => {
-    const tokenJson = window.prompt("Paste invite token JSON:");
+    const tokenJson = window.prompt(t.invitePastePrompt);
     if (!tokenJson) return;
     try {
       const [roomId, roomPassword] = await invoke<[string, string | null]>("accept_invite", { tokenJson });
@@ -909,7 +921,7 @@ function App() {
       setActiveContext({ type: 'group', id: roomId });
     } catch (err) {
       console.error(err);
-      alert("Invite accept failed.");
+      alert(t.inviteAcceptFailed);
     }
   };
 
@@ -936,7 +948,7 @@ function App() {
     e.target.value = '';
     if (!file || !peer) return;
     if (file.size > fileMaxMb * 1024 * 1024) {
-      alert(`${file.name} is larger than the ${fileMaxMb} MiB limit.`);
+      alert(t.fileTooLarge(file.name, fileMaxMb));
       return;
     }
     try {
@@ -953,7 +965,7 @@ function App() {
       } }));
     } catch (err) {
       console.error("File send error", err);
-      alert(`Could not send ${file.name}: ${err}`);
+      alert(t.fileSendFailed(file.name, String(err)));
     }
   };
 
@@ -969,7 +981,7 @@ function App() {
   const openReceivedFile = async (transferId: string, reveal: boolean) => {
     try {
       await invoke<string>("open_received_file", { transferId, reveal });
-    } catch (err) { alert(`Cannot open file: ${err}`); }
+    } catch (err) { alert(t.fileOpenFailed(String(err))); }
   };
 
   const dismissTransfer = (transferId: string) =>
@@ -996,65 +1008,78 @@ function App() {
     ? `# ${activeContext.id}`
     : `@ ${friends.find(f => f.peer_id === activeContext.id)?.nickname || activeContext.id.substring(0,6)}`;
 
+  const settingsTabLabels: Record<typeof settingsTab, string> = {
+    identity: t.tabIdentity,
+    network: t.tabNetwork,
+    privacy: t.tabPrivacy,
+    rooms: t.tabRooms,
+    storage: t.tabStorage,
+    media: t.tabMedia,
+    advanced: t.tabAdvanced,
+    about: t.tabAbout,
+  };
+
   if (!isAuthenticated) {
     return (
       <OnboardingWizard
         onComplete={() => setIsAuthenticated(true)}
+        lang={lang}
+        onLangChange={changeLang}
       />
     );
   }
 
   return (
     <div className="app-container">
-      <UpdateChecker />
+      <UpdateChecker lang={lang} />
       {/* Hidden file input */}
       <input type="file" ref={fileInputRef} style={{display: 'none'}} onChange={handleFileChange} />
 
       {/* File transfers: incoming offers (ask before accept), progress, results */}
       {Object.values(fileTransfers).length > 0 && (
         <div className="file-transfers">
-          {Object.values(fileTransfers).map(t => {
-            const who = friends.find(f => f.peer_id === t.peerId)?.nickname || t.peerId.substring(0, 8);
-            const pct = t.total > 0 ? Math.round((t.done / t.total) * 100) : 0;
+          {Object.values(fileTransfers).map(ft => {
+            const who = friends.find(f => f.peer_id === ft.peerId)?.nickname || ft.peerId.substring(0, 8);
+            const pct = ft.total > 0 ? Math.round((ft.done / ft.total) * 100) : 0;
             return (
-              <div key={t.transferId} className={`file-transfer file-transfer-${t.status}`}>
-                <div className="file-transfer-title" title={t.filename}>
-                  {t.direction === 'receive' ? '⬇' : '⬆'} {t.filename} <span className="file-transfer-meta">({formatBytes(t.size)}, {t.direction === 'receive' ? 'from' : 'to'} {who})</span>
+              <div key={ft.transferId} className={`file-transfer file-transfer-${ft.status}`}>
+                <div className="file-transfer-title" title={ft.filename}>
+                  {ft.direction === 'receive' ? '⬇' : '⬆'} {ft.filename} <span className="file-transfer-meta">{ft.direction === 'receive' ? t.fileMetaFrom(formatBytes(ft.size), who) : t.fileMetaTo(formatBytes(ft.size), who)}</span>
                 </div>
-                {t.status === 'offer' && t.direction === 'receive' && (
+                {ft.status === 'offer' && ft.direction === 'receive' && (
                   <div className="file-transfer-actions">
-                    <button className="peer-btn" onClick={() => respondToFileOffer(t.transferId, false)}>Reject</button>
-                    <button className="peer-btn" onClick={() => respondToFileOffer(t.transferId, true)}>Accept</button>
+                    <button className="peer-btn" onClick={() => respondToFileOffer(ft.transferId, false)}>{t.reject}</button>
+                    <button className="peer-btn" onClick={() => respondToFileOffer(ft.transferId, true)}>{t.accept}</button>
                   </div>
                 )}
-                {t.status === 'offer' && t.direction === 'send' && (
-                  <div className="file-transfer-meta">Waiting for the recipient to accept…</div>
+                {ft.status === 'offer' && ft.direction === 'send' && (
+                  <div className="file-transfer-meta">{t.fileWaiting}</div>
                 )}
-                {t.status === 'active' && (
+                {ft.status === 'active' && (
                   <>
                     <progress max={100} value={pct} />
                     <div className="file-transfer-actions">
                       <span className="file-transfer-meta">{pct}%</span>
-                      <button className="peer-btn" onClick={() => respondToFileOffer(t.transferId, false)}>Cancel</button>
+                      <button className="peer-btn" onClick={() => respondToFileOffer(ft.transferId, false)}>{t.cancel}</button>
                     </div>
                   </>
                 )}
-                {t.status === 'done' && (
+                {ft.status === 'done' && (
                   <div className="file-transfer-actions">
-                    {t.direction === 'receive' && t.path ? (
+                    {ft.direction === 'receive' && ft.path ? (
                       <>
-                        <span className="file-transfer-meta" title={t.path}>Saved</span>
-                        <button className="peer-btn" onClick={() => openReceivedFile(t.transferId, false)}>Open</button>
-                        <button className="peer-btn" onClick={() => openReceivedFile(t.transferId, true)}>Show in folder</button>
+                        <span className="file-transfer-meta" title={ft.path}>{t.fileSaved}</span>
+                        <button className="peer-btn" onClick={() => openReceivedFile(ft.transferId, false)}>{t.fileOpen}</button>
+                        <button className="peer-btn" onClick={() => openReceivedFile(ft.transferId, true)}>{t.fileShowInFolder}</button>
                       </>
-                    ) : <span className="file-transfer-meta">Delivered</span>}
-                    <button className="peer-btn" onClick={() => dismissTransfer(t.transferId)}>✕</button>
+                    ) : <span className="file-transfer-meta">{t.fileDelivered}</span>}
+                    <button className="peer-btn" title={t.dismiss} onClick={() => dismissTransfer(ft.transferId)}>✕</button>
                   </div>
                 )}
-                {t.status === 'failed' && (
+                {ft.status === 'failed' && (
                   <div className="file-transfer-actions">
-                    <span className="file-transfer-meta">Failed: {t.reason}</span>
-                    <button className="peer-btn" onClick={() => dismissTransfer(t.transferId)}>✕</button>
+                    <span className="file-transfer-meta">{t.fileFailed(ft.reason ?? "")}</span>
+                    <button className="peer-btn" title={t.dismiss} onClick={() => dismissTransfer(ft.transferId)}>✕</button>
                   </div>
                 )}
               </div>
@@ -1070,6 +1095,7 @@ function App() {
         panicScope={panicScope}
         setPanicScope={setPanicScope}
         executePanicWipe={executePanicWipe}
+        lang={lang}
       />
 
       {/* Remote Audio Elements for Voice Calls */}
@@ -1081,11 +1107,11 @@ function App() {
       {incomingCalls.map(c => (
         <div key={c.sender} className="modal-overlay">
           <div className="modal-content">
-            <h3>Incoming Call 📞</h3>
-            <p>{friends.find(f => f.peer_id === c.sender)?.nickname || c.sender.substring(0, 8)}... is calling ({c.callType})</p>
+            <h3>{t.incomingCall} 📞</h3>
+            <p>{t.isCalling(friends.find(f => f.peer_id === c.sender)?.nickname || c.sender.substring(0, 8), c.callType === 'video' ? t.callVideo : c.callType === 'screen' ? t.callScreen : c.callType === 'audio' ? t.callAudio : c.callType)}</p>
             <div className="modal-actions">
-              <button className="peer-btn" onClick={() => setIncomingCalls(p => p.filter(x => x.sender !== c.sender))} style={{color: '#ff4444', borderColor: '#ff4444'}}>Reject</button>
-              <button className="peer-btn" onClick={() => handleAcceptCall(c)} style={{color: '#44ff44', borderColor: '#44ff44'}}>Accept</button>
+              <button className="peer-btn" onClick={() => setIncomingCalls(p => p.filter(x => x.sender !== c.sender))} style={{color: '#ff4444', borderColor: '#ff4444'}}>{t.reject}</button>
+              <button className="peer-btn" onClick={() => handleAcceptCall(c)} style={{color: '#44ff44', borderColor: '#44ff44'}}>{t.accept}</button>
             </div>
           </div>
         </div>
@@ -1095,130 +1121,135 @@ function App() {
       {showSettings && (
         <div className="modal-overlay">
           <div className="modal-content settings-modal">
-            <h3>Settings</h3>
+            <h3>{t.settingsTitle}</h3>
             <div className="settings-tabs">
               {(['identity','network','privacy','rooms','storage','media','advanced','about'] as const).map(tab => (
-                <button key={tab} className={`settings-tab ${settingsTab === tab ? 'active' : ''}`} onClick={() => setSettingsTab(tab)}>{tab}</button>
+                <button key={tab} className={`settings-tab ${settingsTab === tab ? 'active' : ''}`} onClick={() => setSettingsTab(tab)}>{settingsTabLabels[tab]}</button>
               ))}
             </div>
 
             <div className="settings-pane">
               {settingsTab === 'identity' && (
                 <>
-                  <label>Nickname alias</label>
-                  <input placeholder="Nickname" value={settingsNick} onChange={e => setSettingsNick(e.target.value)} />
-                  <div className="settings-note">Alias changes do not change your cryptographic identity: {peerId.substring(0, 16)}...</div>
+                  <label>{t.nickAlias}</label>
+                  <input placeholder={t.nickAliasPh} value={settingsNick} onChange={e => setSettingsNick(e.target.value)} />
+                  <div className="settings-note">{t.aliasNote(peerId.substring(0, 16))}</div>
+                  <label>{t.language}</label>
+                  <select value={lang} onChange={e => changeLang(e.target.value as Lang)}>
+                    <option value="tr">Türkçe</option>
+                    <option value="en">English</option>
+                  </select>
                 </>
               )}
 
               {settingsTab === 'network' && (
                 <>
-                  <label>Primary bootstrap node</label>
+                  <label>{t.primaryBootstrap}</label>
                   <input placeholder="/ip4/x.x.x.x/tcp/XXXX/p2p/12D3..." value={settingsBootstrap} onChange={e => setSettingsBootstrap(e.target.value)} />
-                  <label>Bootstrap list</label>
-                  <textarea value={settingsBootstrapList} onChange={e => setSettingsBootstrapList(e.target.value)} placeholder="One multiaddr per line" />
-                  <label>Network mode</label>
+                  <label>{t.bootstrapList}</label>
+                  <textarea value={settingsBootstrapList} onChange={e => setSettingsBootstrapList(e.target.value)} placeholder={t.bootstrapListPh} />
+                  <label>{t.networkMode}</label>
                   <select value={proxyMode} onChange={e => setProxyMode(e.target.value)}>
-                    <option value="none">Direct</option>
-                    <option value="tor">Tor via Arti</option>
-                    <option value="socks5">SOCKS5 proxy (outbound only)</option>
-                    <option value="i2p">I2P via router SOCKS proxy (.i2p peers only, experimental)</option>
+                    <option value="none">{t.modeDirect}</option>
+                    <option value="tor">{t.modeTor}</option>
+                    <option value="socks5">{t.modeSocks}</option>
+                    <option value="i2p">{t.modeI2p}</option>
                   </select>
-                  <label>Transport preference</label>
+                  <label>{t.transportPref}</label>
                   <select value={transportPreference} onChange={e => setTransportPreference(e.target.value)}>
                     <option value="tcp">TCP</option>
-                    <option value="quic">QUIC preferred</option>
-                    <option value="tor">Tor preferred</option>
+                    <option value="quic">{t.quicPreferred}</option>
+                    <option value="tor">{t.torPreferred}</option>
                   </select>
                   {(proxyMode === 'socks5' || proxyMode === 'i2p') && (
                     <>
-                      <input placeholder={proxyMode === 'socks5' ? 'host:port or user:pass@host:port (e.g. 127.0.0.1:9050)' : '127.0.0.1:4447 (default)'} value={proxyAddr} onChange={e => setProxyAddr(e.target.value)} />
+                      <input placeholder={proxyMode === 'socks5' ? t.socksPh : t.i2pPh} value={proxyAddr} onChange={e => setProxyAddr(e.target.value)} />
                       <div className="settings-note">
                         {proxyMode === 'socks5'
-                          ? 'All connections go through this proxy, which resolves host names. Required. If the proxy is unreachable the session will not start; there is no direct fallback. No listening, QUIC, mDNS, relay serving or hole punching.'
-                          : 'Uses the I2P router\'s SOCKS proxy. Only .i2p peer addresses (/dns/<name>.b32.i2p/tcp/<port>/p2p/<id>) are dialed; clearnet bootstrap nodes are unreachable and inbound connections are not supported.'}
+                          ? t.socksNote
+                          : t.i2pNote}
                       </div>
                     </>
                   )}
-                  <label><input type="checkbox" checked={torEnabled} onChange={e => setTorEnabled(e.target.checked)} /> Tor transport on next session</label>
-                  <label><input type="checkbox" checked={mdnsEnabled} onChange={e => setMdnsEnabled(e.target.checked)} /> Local mDNS discovery</label>
-                  <label><input type="checkbox" checked={dhtServerMode} onChange={e => setDhtServerMode(e.target.checked)} /> Serve DHT records</label>
-                  <label><input type="checkbox" checked={relayEnabled} onChange={e => setRelayEnabled(e.target.checked)} /> Volunteer relay mode</label>
-                  <label><input type="checkbox" checked={relayFallbackEnabled} onChange={e => setRelayFallbackEnabled(e.target.checked)} /> Try relay fallback when direct path fails</label>
-                  <label><input type="checkbox" checked={publishCapabilities} onChange={e => setPublishCapabilities(e.target.checked)} /> Publish local capabilities to connected peers</label>
+                  <label><input type="checkbox" checked={torEnabled} onChange={e => setTorEnabled(e.target.checked)} /> {t.torNextSession}</label>
+                  <label><input type="checkbox" checked={mdnsEnabled} onChange={e => setMdnsEnabled(e.target.checked)} /> {t.mdnsDiscovery}</label>
+                  <label><input type="checkbox" checked={dhtServerMode} onChange={e => setDhtServerMode(e.target.checked)} /> {t.dhtServe}</label>
+                  <label><input type="checkbox" checked={relayEnabled} onChange={e => setRelayEnabled(e.target.checked)} /> {t.volunteerRelay}</label>
+                  <label><input type="checkbox" checked={relayFallbackEnabled} onChange={e => setRelayFallbackEnabled(e.target.checked)} /> {t.relayFallback}</label>
+                  <label><input type="checkbox" checked={publishCapabilities} onChange={e => setPublishCapabilities(e.target.checked)} /> {t.publishCaps}</label>
                 </>
               )}
 
               {settingsTab === 'privacy' && (
                 <>
-                  <label><input type="checkbox" checked={coverTraffic} onChange={e => setCoverTraffic(e.target.checked)} /> Cover traffic chaff</label>
-                  <label><input type="checkbox" checked={msgDelay} onChange={e => setMsgDelay(e.target.checked)} /> Random send delay</label>
-                  <label><input type="checkbox" checked={localNotifications} onChange={e => setLocalNotifications(e.target.checked)} /> Local notifications</label>
-                  <label><input type="checkbox" checked={proofOfWorkEnabled} onChange={e => setProofOfWorkEnabled(e.target.checked)} /> Require proof-of-work for noisy peers</label>
-                  <label>Unknown peer policy</label>
+                  <label><input type="checkbox" checked={coverTraffic} onChange={e => setCoverTraffic(e.target.checked)} /> {t.coverTraffic}</label>
+                  <label><input type="checkbox" checked={msgDelay} onChange={e => setMsgDelay(e.target.checked)} /> {t.randomDelay}</label>
+                  <label><input type="checkbox" checked={localNotifications} onChange={e => setLocalNotifications(e.target.checked)} /> {t.localNotifications}</label>
+                  <label><input type="checkbox" checked={proofOfWorkEnabled} onChange={e => setProofOfWorkEnabled(e.target.checked)} /> {t.requirePow}</label>
+                  <label>{t.unknownPeerPolicy}</label>
                   <select value={unknownPeerPolicy} onChange={e => setUnknownPeerPolicy(e.target.value)}>
-                    <option value="request-only">Request-only</option>
-                    <option value="allow">Allow</option>
-                    <option value="block">Block</option>
+                    <option value="request-only">{t.policyRequestOnly}</option>
+                    <option value="allow">{t.policyAllow}</option>
+                    <option value="block">{t.policyBlock}</option>
                   </select>
-                  <label>Rate limit per identity/minute</label>
+                  <label>{t.rateLimitIdentity}</label>
                   <input type="number" min={1} value={rateLimitPerMinute} onChange={e => setRateLimitPerMinute(parseInt(e.target.value) || 1)} />
-                  <label>Minimum trust for DM</label>
+                  <label>{t.minTrustDm}</label>
                   <input type="number" min={0} max={10} value={minTrustDm} onChange={e => setMinTrustDm(parseInt(e.target.value) || 0)} />
-                  <label>Minimum trust for file</label>
+                  <label>{t.minTrustFile}</label>
                   <input type="number" min={0} max={10} value={minTrustFile} onChange={e => setMinTrustFile(parseInt(e.target.value) || 0)} />
-                  <label>Minimum trust for invite</label>
+                  <label>{t.minTrustInvite}</label>
                   <input type="number" min={0} max={10} value={minTrustInvite} onChange={e => setMinTrustInvite(parseInt(e.target.value) || 0)} />
-                  <div className="settings-note">No telemetry, no global moderation, no central account authority.</div>
+                  <div className="settings-note">{t.privacyNote}</div>
                 </>
               )}
 
               {settingsTab === 'rooms' && (
                 <>
-                  <label>Default TTL seconds</label>
-                  <input type="number" min={0} placeholder="empty = off" value={defaultTtl} onChange={e => setDefaultTtl(e.target.value)} />
-                  <label><input type="checkbox" checked={persistenceEnabled} onChange={e => setPersistenceEnabled(e.target.checked)} /> Persist room state locally</label>
-                  <label><input type="checkbox" checked={inviteOnlyDefault} onChange={e => setInviteOnlyDefault(e.target.checked)} /> Invite-only by default</label>
+                  <label>{t.defaultTtl}</label>
+                  <input type="number" min={0} placeholder={t.defaultTtlPh} value={defaultTtl} onChange={e => setDefaultTtl(e.target.value)} />
+                  <label><input type="checkbox" checked={persistenceEnabled} onChange={e => setPersistenceEnabled(e.target.checked)} /> {t.persistRoomState}</label>
+                  <label><input type="checkbox" checked={inviteOnlyDefault} onChange={e => setInviteOnlyDefault(e.target.checked)} /> {t.inviteOnlyDefault}</label>
                 </>
               )}
 
               {settingsTab === 'storage' && (
                 <>
-                  <label><input type="checkbox" checked={storageNodeEnabled} onChange={e => setStorageNodeEnabled(e.target.checked)} /> Volunteer encrypted storage node</label>
-                  <label>Storage quota MB</label>
+                  <label><input type="checkbox" checked={storageNodeEnabled} onChange={e => setStorageNodeEnabled(e.target.checked)} /> {t.storageNode}</label>
+                  <label>{t.storageQuota}</label>
                   <input type="number" min={1} value={storageQuotaMb} onChange={e => setStorageQuotaMb(parseInt(e.target.value) || 1)} />
-                  <label>Storage retention days</label>
+                  <label>{t.storageRetention}</label>
                   <input type="number" min={1} value={storageRetentionDays} onChange={e => setStorageRetentionDays(parseInt(e.target.value) || 1)} />
-                  <label>Max incoming/outgoing file size MiB</label>
+                  <label>{t.maxFileSize}</label>
                   <input type="number" min={1} max={4096} value={fileMaxMb} onChange={e => setFileMaxMb(parseInt(e.target.value) || 1)} />
-                  <label>Max concurrent file transfers</label>
+                  <label>{t.maxConcurrent}</label>
                   <input type="number" min={1} max={16} value={fileMaxConcurrent} onChange={e => setFileMaxConcurrent(parseInt(e.target.value) || 1)} />
-                  <div className="settings-note">Incoming files always ask before downloading and go to your Downloads folder. Partial transfers count against the storage quota.</div>
+                  <div className="settings-note">{t.storageNote}</div>
                 </>
               )}
 
               {settingsTab === 'media' && (
                 <>
-                  <label>SFU threshold</label>
+                  <label>{t.sfuThreshold}</label>
                   <input type="number" min={2} value={sfuThreshold} onChange={e => setSfuThreshold(parseInt(e.target.value) || 2)} />
-                  <label>Preferred SFU peer</label>
-                  <input value={preferredSfuPeer} onChange={e => setPreferredSfuPeer(e.target.value)} placeholder="PeerId or blank" />
-                  <label><input type="checkbox" checked={acceptRelay} onChange={e => setAcceptRelay(e.target.checked)} /> Accept volunteer media relay role</label>
-                  <label><input type="checkbox" checked={experimentalMediaE2ee} onChange={e => setExperimentalMediaE2ee(e.target.checked)} /> 🔐 Media E2EE (AES-256-GCM WebRTC encryption)</label>
-                  <div className="settings-note">XOR demo media crypto was removed; real SFrame/AES-GCM is a future phase.</div>
+                  <label>{t.preferredSfu}</label>
+                  <input value={preferredSfuPeer} onChange={e => setPreferredSfuPeer(e.target.value)} placeholder={t.preferredSfuPh} />
+                  <label><input type="checkbox" checked={acceptRelay} onChange={e => setAcceptRelay(e.target.checked)} /> {t.acceptMediaRelay}</label>
+                  <label><input type="checkbox" checked={experimentalMediaE2ee} onChange={e => setExperimentalMediaE2ee(e.target.checked)} /> 🔐 {t.mediaE2ee}</label>
+                  <div className="settings-note">{t.mediaNote}</div>
                 </>
               )}
 
               {settingsTab === 'advanced' && (
                 <>
-                  <button className="cyber-btn" onClick={handleExportConfig}>Export config JSON</button>
-                  <button className="cyber-btn" onClick={handleImportConfig}>Import config JSON</button>
-                  <div className="settings-note">Config export excludes private keys and message databases.</div>
-                  <label>Panic wipe scope</label>
+                  <button className="cyber-btn" onClick={handleExportConfig}>{t.exportConfig}</button>
+                  <button className="cyber-btn" onClick={handleImportConfig}>{t.importConfig}</button>
+                  <div className="settings-note">{t.configNote}</div>
+                  <label>{t.panicScopeLabel}</label>
                   <select value={panicScope} onChange={e => setPanicScope(e.target.value)}>
-                    <option value="active_profile">Active profile</option>
-                    <option value="message_db_only">Message DB only</option>
-                    <option value="all_profiles">All local profiles</option>
+                    <option value="active_profile">{t.scopeActive}</option>
+                    <option value="message_db_only">{t.scopeMsgDb}</option>
+                    <option value="all_profiles">{t.scopeAll}</option>
                   </select>
                 </>
               )}
@@ -1227,7 +1258,7 @@ function App() {
                 <div className="about-pane">
                   <div className="about-version">AlterChat v{appVersion}</div>
                   <div className="about-desc">
-                    Local-first, peer-to-peer, zero-trust communication workspace.
+                    {t.aboutDesc}
                   </div>
                   <div>
                     <a
@@ -1238,19 +1269,19 @@ function App() {
                         invoke("plugin:opener|open_url", { url: "https://github.com/onurbaydas/AlterChat/blob/main/CHANGELOG.md" }).catch(console.error);
                       }}
                     >
-                      Changelog
+                      {t.changelog}
                     </a>
                   </div>
                   <div className="settings-note">
-                    License: AGPL-3.0. Alpha-stage research implementation — treat accordingly.
+                    {t.license}
                   </div>
                 </div>
               )}
             </div>
 
             <div className="modal-actions">
-              <button className="cyber-btn" onClick={() => setShowSettings(false)}>İptal</button>
-              <button className="cyber-btn primary" onClick={handleSaveSettings}>💾 Kaydet</button>
+              <button className="cyber-btn" onClick={() => setShowSettings(false)}>{t.cancel}</button>
+              <button className="cyber-btn primary" onClick={handleSaveSettings}>💾 {t.save}</button>
             </div>
           </div>
         </div>
@@ -1260,12 +1291,12 @@ function App() {
       {showJoin && (
         <div className="modal-overlay">
           <div className="modal-content">
-            <h3>Join / Create Group</h3>
-            <input placeholder="Group Name" value={joinName} onChange={e => setJoinName(e.target.value)} />
-            <input type="password" placeholder="Password (E2EE)" value={joinPassword} onChange={e => setJoinPassword(e.target.value)} />
+            <h3>{t.joinTitle}</h3>
+            <input placeholder={t.groupNamePh} value={joinName} onChange={e => setJoinName(e.target.value)} />
+            <input type="password" placeholder={t.groupPwPh} value={joinPassword} onChange={e => setJoinPassword(e.target.value)} />
             <div className="modal-actions">
-              <button className="cyber-btn" onClick={() => setShowJoin(false)}>Cancel</button>
-              <button className="cyber-btn primary" onClick={handleJoinGroup}>Join</button>
+              <button className="cyber-btn" onClick={() => setShowJoin(false)}>{t.cancel}</button>
+              <button className="cyber-btn primary" onClick={handleJoinGroup}>{t.join}</button>
             </div>
           </div>
         </div>
@@ -1275,18 +1306,18 @@ function App() {
       {showAddFriend && (
         <div className="modal-overlay">
           <div className="modal-content">
-            <h3>Add Friend / Contact</h3>
+            <h3>{t.addFriendTitle}</h3>
             <div className="modal-form">
-              <label>Peer ID</label>
+              <label>{t.peerIdLabel}</label>
               <input type="text" value={friendIdInput} onChange={e => setFriendIdInput(e.target.value)} placeholder="12D3KooW..." />
-              <label>Nickname</label>
+              <label>{t.friendNick}</label>
               <input type="text" value={friendNickInput} onChange={e => setFriendNickInput(e.target.value)} placeholder="Cypher..." />
-              <label>Offline Public Key (Optional)</label>
-              <input type="text" value={friendPubkeyInput} onChange={e => setFriendPubkeyInput(e.target.value)} placeholder="Hex key for DHT mailbox..." />
+              <label>{t.offlinePubkey}</label>
+              <input type="text" value={friendPubkeyInput} onChange={e => setFriendPubkeyInput(e.target.value)} placeholder={t.offlinePubkeyPh} />
             </div>
             <div className="modal-actions">
-              <button className="cyber-btn" onClick={() => setShowAddFriend(false)}>Cancel</button>
-              <button className="cyber-btn primary" onClick={handleAddFriend}>Add</button>
+              <button className="cyber-btn" onClick={() => setShowAddFriend(false)}>{t.cancel}</button>
+              <button className="cyber-btn primary" onClick={handleAddFriend}>{t.add}</button>
             </div>
           </div>
         </div>
@@ -1295,35 +1326,35 @@ function App() {
       {showContextSettings && (
         <div className="modal-overlay">
           <div className="modal-content settings-modal">
-            <h3>{activeContext.type === 'friend' ? 'Peer Controls' : 'Room Controls'}</h3>
+            <h3>{activeContext.type === 'friend' ? t.peerControls : t.roomControls}</h3>
             <div className="settings-pane">
               {peerSettings && (
                 <>
-                  <label>Trust level</label>
+                  <label>{t.trustLevel}</label>
                   <input type="number" min={0} max={10} value={peerSettings.trust_level} onChange={e => setPeerSettings({ ...peerSettings, trust_level: parseInt(e.target.value) || 0 })} />
-                  <label><input type="checkbox" checked={peerSettings.blocked} onChange={e => setPeerSettings({ ...peerSettings, blocked: e.target.checked })} /> Block this identity locally</label>
-                  <label><input type="checkbox" checked={peerSettings.muted} onChange={e => setPeerSettings({ ...peerSettings, muted: e.target.checked })} /> Mute notifications locally</label>
-                  <label>Rate limit/minute</label>
+                  <label><input type="checkbox" checked={peerSettings.blocked} onChange={e => setPeerSettings({ ...peerSettings, blocked: e.target.checked })} /> {t.blockLocal}</label>
+                  <label><input type="checkbox" checked={peerSettings.muted} onChange={e => setPeerSettings({ ...peerSettings, muted: e.target.checked })} /> {t.muteLocal}</label>
+                  <label>{t.rateLimitMinute}</label>
                   <input type="number" min={1} value={peerSettings.rate_limit_per_minute} onChange={e => setPeerSettings({ ...peerSettings, rate_limit_per_minute: parseInt(e.target.value) || 1 })} />
-                  <label><input type="checkbox" checked={peerSettings.proof_of_work_required} onChange={e => setPeerSettings({ ...peerSettings, proof_of_work_required: e.target.checked })} /> Require proof-of-work from this peer</label>
+                  <label><input type="checkbox" checked={peerSettings.proof_of_work_required} onChange={e => setPeerSettings({ ...peerSettings, proof_of_work_required: e.target.checked })} /> {t.requirePowPeer}</label>
                 </>
               )}
 
               {roomSettings && (
                 <>
-                  <label>Default TTL seconds</label>
+                  <label>{t.defaultTtl}</label>
                   <input type="number" min={0} value={roomSettings.default_ttl || ""} onChange={e => setRoomSettings({ ...roomSettings, default_ttl: e.target.value ? parseInt(e.target.value) : null })} />
-                  <label>Retention days</label>
+                  <label>{t.retentionDays}</label>
                   <input type="number" min={0} value={roomSettings.retention_days || ""} onChange={e => setRoomSettings({ ...roomSettings, retention_days: e.target.value ? parseInt(e.target.value) : null })} />
-                  <label><input type="checkbox" checked={roomSettings.persistence_enabled} onChange={e => setRoomSettings({ ...roomSettings, persistence_enabled: e.target.checked })} /> Persist this room locally</label>
-                  <label><input type="checkbox" checked={roomSettings.invite_only} onChange={e => setRoomSettings({ ...roomSettings, invite_only: e.target.checked })} /> Invite-only local policy</label>
-                  <label><input type="checkbox" checked={roomSettings.notifications_enabled} onChange={e => setRoomSettings({ ...roomSettings, notifications_enabled: e.target.checked })} /> Local notifications</label>
+                  <label><input type="checkbox" checked={roomSettings.persistence_enabled} onChange={e => setRoomSettings({ ...roomSettings, persistence_enabled: e.target.checked })} /> {t.persistRoom}</label>
+                  <label><input type="checkbox" checked={roomSettings.invite_only} onChange={e => setRoomSettings({ ...roomSettings, invite_only: e.target.checked })} /> {t.inviteOnlyLocal}</label>
+                  <label><input type="checkbox" checked={roomSettings.notifications_enabled} onChange={e => setRoomSettings({ ...roomSettings, notifications_enabled: e.target.checked })} /> {t.localNotifications}</label>
                 </>
               )}
             </div>
             <div className="modal-actions">
-              <button className="cyber-btn" onClick={() => setShowContextSettings(false)}>Cancel</button>
-              <button className="cyber-btn primary" onClick={saveContextSettings}>Save</button>
+              <button className="cyber-btn" onClick={() => setShowContextSettings(false)}>{t.cancel}</button>
+              <button className="cyber-btn primary" onClick={saveContextSettings}>{t.save}</button>
             </div>
           </div>
         </div>
@@ -1333,17 +1364,17 @@ function App() {
       <div className="nav-panel glass-panel">
         <div className="nav-header">
           <span className="nav-icon">⬢</span> <span>ALTERCHAT</span>
-          <span style={{ marginLeft: 'auto' }}><NetworkStatusBadge status={networkStatus} reachability={reachability} /></span>
+          <span style={{ marginLeft: 'auto' }}><NetworkStatusBadge status={networkStatus} reachability={reachability} lang={lang} /></span>
         </div>
         
         <div className="nav-section">
           <div className="nav-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>Encrypted Swarms</span>
-            <button className="icon-btn" style={{ padding: 0, fontSize: '1rem', color: 'var(--accent-primary)' }} title="Accept Invite" onClick={handleAcceptInvite}>🎟️</button>
+            <span>{t.encryptedSwarms}</span>
+            <button className="icon-btn" style={{ padding: 0, fontSize: '1rem', color: 'var(--accent-primary)' }} title={t.acceptInvite} onClick={handleAcceptInvite}>🎟️</button>
           </div>
           <div className={`nav-item ${activeContext.type === 'global' ? 'active' : ''}`} onClick={() => setActiveContext({type: 'global', id: ''})}>
             <div className="nav-icon">🌐</div>
-            <span>Global Mesh</span>
+            <span>{t.globalMesh}</span>
           </div>
           {savedGroups.map(g => (
             <div key={g.channel_name} 
@@ -1358,10 +1389,10 @@ function App() {
           ))}
           <div className="nav-item" onClick={() => setShowJoin(true)}>
             <div className="nav-icon" style={{color: 'var(--accent-green)'}}>+</div>
-            <span>Join Swarm</span>
+            <span>{t.joinSwarm}</span>
           </div>
 
-          <div className="nav-label" style={{marginTop: '24px'}}>Direct Nodes</div>
+          <div className="nav-label" style={{marginTop: '24px'}}>{t.directNodes}</div>
           {friends.map(f => (
             <div key={f.peer_id} 
                  className={`nav-item ${activeContext.type === 'friend' && activeContext.id === f.peer_id ? 'active' : ''}`}
@@ -1372,7 +1403,7 @@ function App() {
           ))}
           <div className="nav-item" onClick={() => setShowAddFriend(true)}>
             <div className="nav-icon" style={{color: 'var(--accent-cyan)'}}>+</div>
-            <span>Add Node</span>
+            <span>{t.addNode}</span>
           </div>
         </div>
 
@@ -1381,10 +1412,11 @@ function App() {
           <div className="user-meta">
             <div className="nick">{myNick}</div>
             <div className="status" title={peerId}>ID: {peerId.substring(0, 8)}...</div>
-            {myOfflinePubkey && <div className="status" title={myOfflinePubkey} style={{color: 'var(--accent-primary)', fontSize: '0.65rem'}}>KEY: {myOfflinePubkey.substring(0, 8)}...</div>}
+            {myOfflinePubkey && <div className="status" title={myOfflinePubkey} style={{color: 'var(--accent-primary)', fontSize: '0.65rem'}}>{t.keyLabel}: {myOfflinePubkey.substring(0, 8)}...</div>}
           </div>
-          <button className="icon-btn" onClick={() => { setSettingsNick(myNick); setShowSettings(true); }} title="Settings">⚙️</button>
-          <button className="icon-btn" onClick={handlePanicWipe} title="PANIC WIPE" style={{color: 'var(--accent-red)'}}>🚨</button>
+          <button className="icon-btn" onClick={() => { setSettingsNick(myNick); setShowSettings(true); }} title={t.settings}>⚙️</button>
+          <button className="icon-btn" onClick={() => changeLang(lang === 'tr' ? 'en' : 'tr')} title={t.langTitle} style={{fontSize: '0.7rem', fontWeight: 700}}>{lang === 'tr' ? 'EN' : 'TR'}</button>
+          <button className="icon-btn" onClick={handlePanicWipe} title={t.panicWipeTitle} style={{color: 'var(--accent-red)'}}>🚨</button>
         </div>
       </div>
 
@@ -1399,25 +1431,25 @@ function App() {
             <form onSubmit={handleSearch}>
               <input 
                 style={{background: '#1e1f22', border: 'none', color: '#dbdee1', padding: '4px 8px', borderRadius: 4, outline: 'none', fontSize: 13}}
-                value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search..." 
+                value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder={t.searchPh} 
               />
             </form>
             {activeContext.type === 'group' && (
               <>
-                <button className="icon-btn" title="Create signed invite" onClick={handleCreateInvite}>✉️</button>
-                <button className="icon-btn" title="Group Audio Call" onClick={() => handleStartCall('audio')} disabled={inCall}>📞</button>
-                <button className="icon-btn" title="Group Video Call" onClick={() => handleStartCall('video')} disabled={inCall}>📹</button>
+                <button className="icon-btn" title={t.createInvite} onClick={handleCreateInvite}>✉️</button>
+                <button className="icon-btn" title={t.groupAudioCall} onClick={() => handleStartCall('audio')} disabled={inCall}>📞</button>
+                <button className="icon-btn" title={t.groupVideoCall} onClick={() => handleStartCall('video')} disabled={inCall}>📹</button>
               </>
             )}
             {activeContext.type === 'friend' && peers.includes(activeContext.id) && (
               <>
-                <button className="icon-btn" title="Audio Call" onClick={() => handleStartCall('audio')} disabled={inCall}>📞</button>
-                <button className="icon-btn" title="Video Call" onClick={() => handleStartCall('video')} disabled={inCall}>📹</button>
-                <button className="icon-btn" title="Send File" onClick={() => { setSelectedPeerFile(activeContext.id); fileInputRef.current?.click(); }}>📎</button>
+                <button className="icon-btn" title={t.audioCall} onClick={() => handleStartCall('audio')} disabled={inCall}>📞</button>
+                <button className="icon-btn" title={t.videoCall} onClick={() => handleStartCall('video')} disabled={inCall}>📹</button>
+                <button className="icon-btn" title={t.sendFile} onClick={() => { setSelectedPeerFile(activeContext.id); fileInputRef.current?.click(); }}>📎</button>
               </>
             )}
-            {inCall && <button className="icon-btn" onClick={handleEndCall} style={{color: 'var(--danger)'}}>🛑</button>}
-            <button className="icon-btn" title="Context Settings" onClick={openContextSettings}>⚙️</button>
+            {inCall && <button className="icon-btn" title={t.endCall} onClick={handleEndCall} style={{color: 'var(--danger)'}}>🛑</button>}
+            <button className="icon-btn" title={t.contextSettings} onClick={openContextSettings}>⚙️</button>
           </div>
         </div>
 
@@ -1442,10 +1474,10 @@ function App() {
               </div>
               <div className="msg-content">
                 <div className="msg-header">
-                  <span className="msg-author">[{msg.sender === "You" ? "sys" : "usr"}] {msg.sender}</span>
+                  <span className="msg-author">[{msg.sender === "You" ? "sys" : "usr"}] {msg.sender === "You" ? t.you : msg.sender}</span>
                   {(msg as any).verified === false && (
-                    <span className="msg-unverified" style={{ color: '#ff4081', fontSize: 11, marginLeft: 6 }} title="Signature missing or invalid: sender identity and text are not authenticated">
-                      ⚠ UNVERIFIED
+                    <span className="msg-unverified" style={{ color: '#ff4081', fontSize: 11, marginLeft: 6 }} title={t.unverifiedTitle}>
+                      ⚠ {t.unverified}
                     </span>
                   )}
                   {(msg as any).peer_id && msg.sender !== "You" && (
@@ -1453,14 +1485,14 @@ function App() {
                       color: (peerTrust[(msg as any).peer_id] || 0) >= 10 ? '#00f0ff' : 
                              (peerTrust[(msg as any).peer_id] || 0) < 0 ? '#ff4081' : '#888' 
                     }}>
-                      TRUST: {peerTrust[(msg as any).peer_id] || 0}
-                      <button className="icon-btn" style={{marginLeft: 4, padding: 0, fontSize: 10}} onClick={() => endorsePeer((msg as any).peer_id, 10)} title="Endorse">▲</button>
-                      <button className="icon-btn" style={{padding: 0, fontSize: 10}} onClick={() => endorsePeer((msg as any).peer_id, -10)} title="Distrust">▼</button>
+                      {t.trustLabel}: {peerTrust[(msg as any).peer_id] || 0}
+                      <button className="icon-btn" style={{marginLeft: 4, padding: 0, fontSize: 10}} onClick={() => endorsePeer((msg as any).peer_id, 10)} title={t.endorse}>▲</button>
+                      <button className="icon-btn" style={{padding: 0, fontSize: 10}} onClick={() => endorsePeer((msg as any).peer_id, -10)} title={t.distrust}>▼</button>
                     </span>
                   )}
                   <span className="msg-time">{formatTime(msg.timestamp)}</span>
                 </div>
-                <div className="msg-text">{msg.text}</div>
+                <div className="msg-text">{msg.text === "[MESSAGE EXPIRED]" ? t.msgExpired : msg.text}</div>
               </div>
             </div>
           ))}
@@ -1469,20 +1501,20 @@ function App() {
 
         <div className="input-area">
           <form className="input-box" onSubmit={handleSend}>
-            <button type="button" className="icon-btn" title="Upload File" onClick={() => { setSelectedPeerFile(activeContext.id); fileInputRef.current?.click(); }}>📎</button>
-            <input type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} placeholder={`Transmit to ${activeTitle.replace(/^# |^@ /, '')}...`} autoFocus />
-            <select className="select-cyber" value={selectedTtl || ""} onChange={e => setSelectedTtl(e.target.value ? parseInt(e.target.value) : null)} title="Message Auto-Destruct Time">
-              <option value="">⏱️ KEEP</option>
-              <option value="5">🔥 5s</option>
-              <option value="15">🔥 15s</option>
-              <option value="60">🔥 1m</option>
-              <option value="300">🔥 5m</option>
-              <option value="3600">🔥 1h</option>
-              <option value="86400">🔥 1d</option>
-              <option value="604800">🔥 7d</option>
+            <button type="button" className="icon-btn" title={t.uploadFile} onClick={() => { setSelectedPeerFile(activeContext.id); fileInputRef.current?.click(); }}>📎</button>
+            <input type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} placeholder={t.transmitTo(activeTitle.replace(/^# |^@ /, ''))} autoFocus />
+            <select className="select-cyber" value={selectedTtl || ""} onChange={e => setSelectedTtl(e.target.value ? parseInt(e.target.value) : null)} title={t.ttlTitle}>
+              <option value="">{`⏱️ ${t.ttlKeep}`}</option>
+              <option value="5">{`🔥 5${t.unitSec}`}</option>
+              <option value="15">{`🔥 15${t.unitSec}`}</option>
+              <option value="60">{`🔥 1${t.unitMin}`}</option>
+              <option value="300">{`🔥 5${t.unitMin}`}</option>
+              <option value="3600">{`🔥 1${t.unitHour}`}</option>
+              <option value="86400">{`🔥 1${t.unitDay}`}</option>
+              <option value="604800">{`🔥 7${t.unitDay}`}</option>
             </select>
             {activeContext.type === 'friend' && (
-              <label style={{ display: 'flex', alignItems: 'center', color: 'var(--accent-cyan)', fontSize: 12, marginLeft: 8, cursor: 'pointer' }} title="Use Onion Routing">
+              <label style={{ display: 'flex', alignItems: 'center', color: 'var(--accent-cyan)', fontSize: 12, marginLeft: 8, cursor: 'pointer' }} title={t.onionTitle}>
                 <input type="checkbox" checked={useOnion} onChange={e => setUseOnion(e.target.checked)} style={{ marginRight: 4 }} />
                 🧅 ONION
               </label>
@@ -1493,21 +1525,21 @@ function App() {
 
       {/* Rightmost Members Panel */}
       <div className="peers-panel glass-panel">
-        <div className="peers-header">ACTIVE PEERS ({peers.length})</div>
+        <div className="peers-header">{t.activePeers(peers.length)}</div>
         {/* #18 Trust Graph + #9 Vault buttons */}
         <div style={{ display: "flex", gap: 4, padding: "4px 8px", borderBottom: "1px solid #1a2a3a" }}>
           <button
             onClick={() => setShowTrustGraph(true)}
             style={{ flex: 1, fontSize: 10, padding: "4px", background: "transparent",
               border: "1px solid #1a3a2a", borderRadius: 4, color: "#00cc66", cursor: "pointer" }}
-            title="Trust Graph"
-          >🕸 Trust</button>
+            title={t.trustGraphTitle}
+          >🕸 {t.trustBtn}</button>
           <button
             onClick={() => setShowVaultExport(true)}
             style={{ flex: 1, fontSize: 10, padding: "4px", background: "transparent",
               border: "1px solid #1a2a3a", borderRadius: 4, color: "#00f0ff", cursor: "pointer" }}
-            title="Vault Export/Import"
-          >🔑 Vault</button>
+            title={t.vaultBtnTitle}
+          >🔑 {t.vaultBtn}</button>
         </div>
         {/* #11 Anonim kanal */}
         <div style={{ padding: "4px 8px", borderBottom: "1px solid #1a2a3a" }}>
@@ -1515,7 +1547,7 @@ function App() {
             <input
               value={anonChannelName}
               onChange={e => setAnonChannelName(e.target.value)}
-              placeholder="anon channel name..."
+              placeholder={t.anonChannelPh}
               style={{ flex: 1, fontSize: 10, padding: "4px 6px", background: "#050a0f",
                 border: "1px solid #1a2a3a", borderRadius: 4, color: "#aaa" }}
             />
@@ -1528,14 +1560,14 @@ function App() {
               }}
               style={{ fontSize: 10, padding: "4px 8px", background: "#0a1a2a",
                 border: "1px solid #00f0ff", borderRadius: 4, color: "#00f0ff", cursor: "pointer" }}
-              title="Join Anonymous Channel"
+              title={t.anonChannelJoin}
             >🎭</button>
           </div>
         </div>
         {/* #16 Ban uyarısı */}
         {bannedPeers.length > 0 && (
           <div style={{ padding: "4px 8px", fontSize: 10, color: "#cc4444", borderBottom: "1px solid #1a2a3a" }}>
-            🚫 {bannedPeers.length} peer(s) network-banned for PoW abuse
+            🚫 {t.bannedPeers(bannedPeers.length)}
           </div>
         )}
         <div className="peers-list">
@@ -1549,15 +1581,15 @@ function App() {
                 </div>
                 <div className="peer-details">
                   <span className="peer-name">{isFriend ? isFriend.nickname : p.substring(0,8)}</span>
-                  <span className="peer-trust-bar">TRUST: 99% | REP: HIGH</span>
+                  <span className="peer-trust-bar">{t.peerTrustBar}</span>
                   {/* #5 Safety Numbers butonu */}
                   {isFriend?.notes && (
                     <button
                       onClick={() => setSafetyNumberPeer({ pubkey: (isFriend as any).offline_pubkey || "", nick: isFriend.nickname })}
                       style={{ fontSize: 9, padding: "2px 4px", background: "transparent",
                         border: "1px solid #1a2a3a", borderRadius: 3, color: "#888", cursor: "pointer", marginTop: 2 }}
-                      title="Verify Safety Numbers"
-                    >🔐 verify</button>
+                      title={t.verifySafetyTitle}
+                    >🔐 {t.verify}</button>
                   )}
                 </div>
               </div>
@@ -1572,6 +1604,7 @@ function App() {
           peerPubkeyHex={safetyNumberPeer.pubkey}
           peerNickname={safetyNumberPeer.nick}
           onClose={() => setSafetyNumberPeer(null)}
+          lang={lang}
         />
       )}
 
@@ -1581,19 +1614,20 @@ function App() {
           myPeerId={""}
           friends={friends}
           onClose={() => setShowTrustGraph(false)}
+          lang={lang}
         />
       )}
 
       {/* #9/#14 Vault Export Modal */}
       {showVaultExport && (
-        <VaultExport onClose={() => setShowVaultExport(false)} />
+        <VaultExport onClose={() => setShowVaultExport(false)} lang={lang} />
       )}
 
       {/* WebRTC Video Grid Overlay */}
       {inCall && (callType === 'video' || callType === 'screen' || remoteStreams.some(s => s.type !== 'audio')) && (
         <div className="video-container">
           <div className="video-wrapper">
-             <div className="video-label">You</div>
+             <div className="video-label">{t.you}</div>
              <video ref={localVideoRef} autoPlay playsInline muted style={{width: '100%'}} />
           </div>
           {remoteStreams.filter(s => s.type === 'video' || s.type === 'screen').map(s => (

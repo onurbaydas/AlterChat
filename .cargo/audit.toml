@@ -1,36 +1,26 @@
 # cargo audit configuration.
 #
-# Every ignored advisory below is pulled in by a dependency whose fix needs a
-# major-version migration. Each entry is tracked in a GitHub issue and must be
-# removed as soon as the migration lands. New advisories still fail CI.
+# Every ignored advisory below is pulled in by a dependency whose fix is not
+# yet selectable. Each entry states why it does not apply and must be
+# removed as soon as a fixed version can be used. New advisories still fail CI.
 
 [advisories]
 ignore = [
-  # --- libp2p 0.56 -> 0.57 migration (tracked: issue #34) ---
-  # hickory-proto/-resolver 0.25 via libp2p-dns. AlterChat does not enable
-  # DNSSEC validation, so the DNSSEC advisories do not apply; the parser
-  # panics/CPU issues are reachable only from the configured system resolver.
-  "RUSTSEC-2026-0118", "RUSTSEC-2026-0119", "RUSTSEC-2026-0487",
-  "RUSTSEC-2026-0489", "RUSTSEC-2026-0490", "RUSTSEC-2026-0491",
-  "RUSTSEC-2026-0504", "RUSTSEC-2026-0505", "RUSTSEC-2026-0511",
-  "RUSTSEC-2026-0512", "RUSTSEC-2026-0530", "RUSTSEC-2026-0531",
-  "RUSTSEC-2026-0532", "RUSTSEC-2026-0549", "RUSTSEC-2026-0550",
-  "RUSTSEC-2026-0551", "RUSTSEC-2026-0514",
-  # libp2p-gossipsub 0.49: PRUNE backoff state growth (fixed in 0.50.1,
-  # which requires libp2p 0.57). Peers are rate limited by AlterChat's own
-  # connection limits in the meantime.
-  "RUSTSEC-2026-0534",
-
-  # --- arti 0.24 upgrade (tracked: issue #35) ---
-  # libsqlite3-sys 0.30: only one libsqlite3-sys may be linked, and arti's
-  # tor-dirmgr pins rusqlite 0.32. AlterChat builds bundled SQLCipher.
+  # --- arti 0.48 (issue #35 done; these remain upstream) ---
+  # libsqlite3-sys 0.38: only one libsqlite3-sys may be linked, and arti
+  # 0.48's tor-dirmgr requires rusqlite >=0.36,<0.41, so the patched
+  # libsqlite3-sys 0.39 (rusqlite 0.41) cannot be selected yet. Even 0.39's
+  # bundled SQLCipher (sqlcipher-src 419.0.6, SQLite 3.53.4) is still
+  # affected. Exposure needs a crafted database + -wal pair written by a less
+  # trusted party; AlterChat only opens its own profile database.
   "RUSTSEC-2026-0459",
-  # ring 0.16 via x509-signature in tor-rtcompat (AES panic with overflow
-  # checks; release builds do not enable overflow checks).
-  "RUSTSEC-2025-0009",
-  # rsa 0.9 (Marvin timing attack) via tor-llcrypto; used only for verifying
-  # Tor directory signatures, never for decryption with a local private key.
+  # rsa 0.9 (Marvin timing attack) via tor-llcrypto / tor-key-forge
+  # (ssh-key-fork-arti). AlterChat uses arti only as a Tor client: RSA is used
+  # to verify Tor directory and relay signatures, never to decrypt with a
+  # local private key. No arti release uses the fixed rsa 0.10 yet.
   "RUSTSEC-2023-0071",
-  # crypto-bigint 0.5 via the same RustCrypto stack; no fixed 0.5 release.
+  # crypto-bigint 0.5 via elliptic-curve/p256, an optional dependency of
+  # ssh-key-fork-arti that is recorded in Cargo.lock but not compiled into
+  # any AlterChat target (`cargo tree -i crypto-bigint` is empty).
   "RUSTSEC-2026-0387",
 ]

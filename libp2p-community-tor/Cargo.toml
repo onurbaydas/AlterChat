@@ -42,13 +42,13 @@ name = "ping-onion"
 path = "examples/ping-onion.rs"
 
 [dependencies.arti-client]
-version = "0.24.0"
+version = "0.48.0"
 
 [dependencies.futures]
 version = "0.3"
 
 [dependencies.libp2p]
-version = "0.56.0"
+version = "0.57.1"
 features = [
     "tokio",
     "tcp",
@@ -61,17 +61,22 @@ version = "1.0"
 features = ["macros"]
 
 [dependencies.tor-rtcompat]
-version = "0.24.0"
+version = "0.48.0"
 features = [
     "tokio",
     "rustls",
 ]
 
+[dependencies.rustls]
+version = "0.23"
+features = ["aws_lc_rs"]
+default-features = false
+
 [dependencies.tracing]
 version = "0.1.40"
 
 [dev-dependencies.libp2p]
-version = "0.56.0"
+version = "0.57.1"
 features = [
     "tokio",
     "noise",

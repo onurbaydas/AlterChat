@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (supply chain)
+
+- SPDX software bill of materials attached to every release and covered by
+  `SHA256SUMS` and the build-provenance attestation.
+- Weekly libFuzzer runs of the network parsers (`fuzz.yml`), line coverage
+  report (`coverage.yml`) and dependency review on pull requests.
+
+### Changed (supply chain)
+
+- All GitHub Actions pinned to commit SHAs and Docker base images pinned to
+  digests (Dependabot keeps them current); workflow tokens are read-only by
+  default.
+
+### Changed (dependencies)
+
+- libp2p 0.56 -> 0.57.1 (gossipsub 0.50, kad 0.49, identity 0.3,
+  hickory-dns 0.26) in the core and the bootstrap node (issue #34).
+- arti-client / tor-rtcompat 0.24 -> 0.48 in the vendored Tor transport; the
+  transport installs the aws-lc-rs rustls provider if none is set. rusqlite
+  0.32 -> 0.40 (SQLCipher bundled), the newest version arti allows
+  (issue #35).
+- ed25519-dalek / x25519-dalek 2 -> 3 (curve25519-dalek 5, rand_core 0.10)
+  (issue #36).
+
+### Security (dependencies)
+
+- Fixed by the upgrades above: hickory-proto/-resolver DNS advisories,
+  RUSTSEC-2026-0534 (gossipsub PRUNE backoff), RUSTSEC-2025-0009 (ring 0.16).
+  Still ignored with reasons in `.cargo/audit.toml`: RUSTSEC-2026-0459,
+  RUSTSEC-2023-0071, RUSTSEC-2026-0387.
+
 ## [0.1.0] - 2026-11-25
 
 First public release.

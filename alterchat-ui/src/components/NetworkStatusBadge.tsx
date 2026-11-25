@@ -1,5 +1,5 @@
 import React from "react";
-import { detectLang } from "../i18n";
+import { detectLang, strings, type Lang } from "../i18n";
 
 export type NetworkStatus = "online" | "connecting" | "offline";
 export type Reachability = "direct" | "relayed" | "unreachable" | null;
@@ -7,6 +7,7 @@ export type Reachability = "direct" | "relayed" | "unreachable" | null;
 interface NetworkStatusBadgeProps {
   status: NetworkStatus;
   reachability?: Reachability;
+  lang?: Lang;
 }
 
 const DOT_BASE: React.CSSProperties = {
@@ -31,35 +32,23 @@ const CONTAINER: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-const LABELS = {
-  tr: {
-    online: "Bağlı",
-    connecting: "Bağlanıyor...",
-    offline: "Çevrimdışı",
-    direct: "doğrudan",
-    relayed: "relay üzerinden",
-    unreachable: "dışarıdan erişilemez",
-    title: "Ağ durumu",
-  },
-  en: {
-    online: "Connected",
-    connecting: "Connecting...",
-    offline: "Offline",
-    direct: "direct",
-    relayed: "via relay",
-    unreachable: "not reachable from outside",
-    title: "Network",
-  },
-} as const;
-
 const COLORS: Record<NetworkStatus, string> = {
   online: "#7cff6b",
   connecting: "#ffb000",
   offline: "#ff5b3a",
 };
 
-export function NetworkStatusBadge({ status, reachability = null }: NetworkStatusBadgeProps) {
-  const l = LABELS[detectLang()];
+export function NetworkStatusBadge({ status, reachability = null, lang }: NetworkStatusBadgeProps) {
+  const t = strings(lang ?? detectLang());
+  const l = {
+    online: t.netOnline,
+    connecting: t.netConnecting,
+    offline: t.netOffline,
+    direct: t.netDirect,
+    relayed: t.netRelayed,
+    unreachable: t.netUnreachable,
+    title: t.netTitle,
+  };
   const color = COLORS[status];
   const reach = reachability ? l[reachability] : null;
   return (

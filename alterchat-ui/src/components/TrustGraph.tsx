@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { detectLang, strings, type Lang } from "../i18n";
 
 interface TrustEdge {
   from_peer_id: string;
@@ -18,9 +19,11 @@ interface Props {
   myPeerId: string;
   friends: Friend[];
   onClose: () => void;
+  lang?: Lang;
 }
 
-export function TrustGraph({ myPeerId, friends, onClose }: Props) {
+export function TrustGraph({ myPeerId, friends, onClose, lang }: Props) {
+  const t = strings(lang ?? detectLang());
   const [edges, setEdges] = useState<TrustEdge[]>([]);
   const [loading, setLoading] = useState(true);
   const [peerUri, setPeerUri] = useState<string>("");
@@ -53,7 +56,7 @@ export function TrustGraph({ myPeerId, friends, onClose }: Props) {
   }
 
   function getNick(peerId: string) {
-    if (peerId === myPeerId) return "YOU";
+    if (peerId === myPeerId) return t.tgYou;
     return friends.find(f => f.peer_id === peerId)?.nickname || shortId(peerId);
   }
 
@@ -73,9 +76,9 @@ export function TrustGraph({ myPeerId, friends, onClose }: Props) {
         borderRadius: 12, padding: 28, maxWidth: 600, width: "100%", maxHeight: "80vh",
         overflow: "auto", boxShadow: "0 0 40px rgba(0,240,255,0.15)"
       }}>
-        <h2 style={{ color: "#00f0ff", marginBottom: 6, fontSize: 18 }}>🕸 Trust Graph</h2>
+        <h2 style={{ color: "#00f0ff", marginBottom: 6, fontSize: 18 }}>🕸 {t.tgTitle}</h2>
         <p style={{ color: "#666", fontSize: 12, marginBottom: 20 }}>
-          Web of trust — edges show verified trust between peers. Decentralized, no authority.
+          {t.tgIntro}
         </p>
 
         {/* #6 QR/URI Section */}
@@ -83,13 +86,13 @@ export function TrustGraph({ myPeerId, friends, onClose }: Props) {
           background: "#0a0f1a", border: "1px solid #1a2a3a",
           borderRadius: 8, padding: 12, marginBottom: 20
         }}>
-          <div style={{ color: "#aaa", fontSize: 11, marginBottom: 6 }}>📡 Your alterchat:// URI (share to add contacts)</div>
+          <div style={{ color: "#aaa", fontSize: 11, marginBottom: 6 }}>📡 {t.tgUriLabel}</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <code style={{
               flex: 1, color: "#00f0ff", fontSize: 10, wordBreak: "break-all",
               background: "#050a0f", padding: "6px 8px", borderRadius: 4
             }}>
-              {peerUri || "Loading…"}
+              {peerUri || t.loading}
             </code>
             <button
               onClick={copyUri}
@@ -99,21 +102,21 @@ export function TrustGraph({ myPeerId, friends, onClose }: Props) {
                 cursor: "pointer", fontSize: 11, fontWeight: "bold", whiteSpace: "nowrap"
               }}
             >
-              {copied ? "✓ Copied" : "Copy"}
+              {copied ? `✓ ${t.copied}` : t.copy}
             </button>
           </div>
         </div>
 
         {/* Trust Edges */}
         <div style={{ color: "#aaa", fontSize: 12, marginBottom: 8 }}>
-          Trust Edges ({edges.length})
+          {t.tgEdges(edges.length)}
         </div>
 
         {loading ? (
-          <div style={{ color: "#666", textAlign: "center", padding: 24 }}>Loading trust graph…</div>
+          <div style={{ color: "#666", textAlign: "center", padding: 24 }}>{t.tgLoading}</div>
         ) : edges.length === 0 ? (
           <div style={{ color: "#444", textAlign: "center", padding: 24 }}>
-            No trust edges yet. Endorse peers to build the web of trust.
+            {t.tgEmpty}
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -153,7 +156,7 @@ export function TrustGraph({ myPeerId, friends, onClose }: Props) {
         {friends.length > 0 && (
           <>
             <div style={{ color: "#aaa", fontSize: 12, marginTop: 20, marginBottom: 8 }}>
-              Friends Trust Levels
+              {t.tgFriendsLevels}
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {friends.map(f => (
@@ -183,7 +186,7 @@ export function TrustGraph({ myPeerId, friends, onClose }: Props) {
             cursor: "pointer", width: "100%"
           }}
         >
-          Close
+          {t.close}
         </button>
       </div>
     </div>

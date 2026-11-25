@@ -11,17 +11,7 @@ updates:
       rust-minor:
         update-types: ["minor", "patch"]
     ignore:
-      # Major bumps of the crypto stack change APIs and must be migrated by
-      # hand together with the rest of the dalek ecosystem.
-      - dependency-name: "x25519-dalek"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "ed25519-dalek"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "curve25519-dalek"
-        update-types: ["version-update:semver-major"]
-      # libp2p and automerge majors need protocol review.
-      - dependency-name: "libp2p*"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # automerge majors/minors need protocol review.
       - dependency-name: "automerge"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: npm

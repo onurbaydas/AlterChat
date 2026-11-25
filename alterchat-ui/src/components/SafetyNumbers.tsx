@@ -1,13 +1,16 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { detectLang, strings, type Lang } from "../i18n";
 
 interface Props {
   peerPubkeyHex: string;
   peerNickname: string;
   onClose: () => void;
+  lang?: Lang;
 }
 
-export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose }: Props) {
+export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose, lang }: Props) {
+  const t = strings(lang ?? detectLang());
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [verified, setVerified] = useState(false);
@@ -38,11 +41,10 @@ export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose }: Props) {
         boxShadow: "0 0 40px rgba(0,240,255,0.2)"
       }}>
         <h2 style={{ color: "var(--accent-cyan, #00f0ff)", marginBottom: 8, fontSize: 18 }}>
-          🔐 Safety Numbers
+          🔐 {t.safetyTitle}
         </h2>
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 20 }}>
-          Compare these numbers with <strong style={{ color: "#fff" }}>{peerNickname}</strong> over a trusted channel
-          (video call, in person). If they match, your conversation is secure.
+          {t.safetyIntroPre}<strong style={{ color: "#fff" }}>{peerNickname}</strong>{t.safetyIntroPost}
         </p>
 
         {!safetyNumber && (
@@ -55,7 +57,7 @@ export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose }: Props) {
               cursor: "pointer", fontWeight: "bold", fontSize: 14
             }}
           >
-            {loading ? "Computing..." : "Generate Safety Number"}
+            {loading ? t.safetyComputing : t.safetyGenerate}
           </button>
         )}
 
@@ -86,7 +88,7 @@ export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose }: Props) {
                     cursor: "pointer", fontWeight: "bold"
                   }}
                 >
-                  ✓ Numbers Match — Verified
+                  ✓ {t.safetyMatch}
                 </button>
                 <button
                   onClick={onClose}
@@ -96,7 +98,7 @@ export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose }: Props) {
                     cursor: "pointer", fontWeight: "bold"
                   }}
                 >
-                  ✗ Mismatch — Abort
+                  ✗ {t.safetyMismatch}
                 </button>
               </div>
             ) : (
@@ -104,7 +106,7 @@ export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose }: Props) {
                 background: "rgba(0,204,102,0.1)", border: "1px solid #00cc66",
                 borderRadius: 8, padding: 16, textAlign: "center", color: "#00cc66"
               }}>
-                ✓ Identity Verified — End-to-End Encrypted
+                ✓ {t.safetyVerified}
               </div>
             )}
           </>
@@ -118,7 +120,7 @@ export function SafetyNumbers({ peerPubkeyHex, peerNickname, onClose }: Props) {
             cursor: "pointer", width: "100%"
           }}
         >
-          Close
+          {t.close}
         </button>
       </div>
     </div>

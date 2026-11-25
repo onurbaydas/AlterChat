@@ -8,6 +8,10 @@ AlterChat-specific documentation around safe use.
 - Documented AlterChat integration expectations.
 - Added explicit misuse warnings for libp2p metadata leaks over Tor.
 - Kept the transport source compatible with the workspace dependency path.
+- Updated to libp2p 0.57 and arti-client / tor-rtcompat 0.48:
+  `TorClientBuilder::create_unbootstrapped` now returns an `Arc`, and the
+  rustls runtime needs a process-wide `CryptoProvider`, which
+  `TorTransport::builder` installs (aws-lc-rs) when none is set.
 
 ## 0.4.1
 
